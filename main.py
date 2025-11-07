@@ -37,31 +37,35 @@ SECRET_KEY = os.getenv("SECRET_KEY", "your-secret-key-change-this-in-production"
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24  # 24 hours
 
-# Email Configuration - Support Resend (primary) and Gmail SMTP (fallback)
+# Email Configuration - Support Resend (primary) and SMTP (fallback)
 RESEND_API_KEY = os.getenv("RESEND_API_KEY", "").strip()
 RESEND_FROM_EMAIL = os.getenv("RESEND_FROM_EMAIL", "onboarding@resend.dev").strip()
 
+# Generic SMTP Configuration (works with Gmail, SendGrid, Mailgun, Outlook, etc.)
 SMTP_SERVER = os.getenv("SMTP_SERVER", "smtp.gmail.com")
 SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
-GMAIL_USER = os.getenv("GMAIL_USER", "").strip()
-GMAIL_PASS = os.getenv("GMAIL_PASS", "").strip()
+SMTP_USER = os.getenv("SMTP_USER", os.getenv("GMAIL_USER", "")).strip()  # Support both SMTP_USER and GMAIL_USER
+SMTP_PASS = os.getenv("SMTP_PASS", os.getenv("GMAIL_PASS", "")).strip()  # Support both SMTP_PASS and GMAIL_PASS
+SMTP_FROM_EMAIL = os.getenv("SMTP_FROM_EMAIL", SMTP_USER).strip()  # From email address
 
 # Validate email configuration on startup
 RESEND_CONFIGURED = bool(RESEND_API_KEY and RESEND_AVAILABLE)
-GMAIL_CONFIGURED = bool(GMAIL_USER and GMAIL_PASS and not GMAIL_USER.startswith("your-") and not GMAIL_PASS.startswith("your-"))
-EMAIL_CONFIGURED = RESEND_CONFIGURED or GMAIL_CONFIGURED
+SMTP_CONFIGURED = bool(SMTP_USER and SMTP_PASS and SMTP_SERVER and not SMTP_USER.startswith("your-") and not SMTP_PASS.startswith("your-"))
+EMAIL_CONFIGURED = RESEND_CONFIGURED or SMTP_CONFIGURED
 
 if not EMAIL_CONFIGURED:
     print("\n⚠️  WARNING: Email not configured!")
     print("   Option 1 (Recommended): Set RESEND_API_KEY and RESEND_FROM_EMAIL")
-    print("   Option 2: Set GMAIL_USER and GMAIL_PASS")
+    print("   Option 2: Set SMTP_SERVER, SMTP_PORT, SMTP_USER, SMTP_PASS")
     print("   OTP emails will be printed to console only for now")
     print("\n")
 elif RESEND_CONFIGURED:
     print("\n✓ Resend email service configured")
     resend.api_key = RESEND_API_KEY
-elif GMAIL_CONFIGURED:
-    print("\n✓ Gmail SMTP email service configured (may have network restrictions on some cloud platforms)")
+elif SMTP_CONFIGURED:
+    print(f"\n✓ SMTP email service configured: {SMTP_SERVER}:{SMTP_PORT}")
+    print(f"   From: {SMTP_FROM_EMAIL}")
+    print("   Note: Some cloud platforms may block SMTP connections")
 print("\n")
 
 # Database setup with Neon DB support
@@ -540,42 +544,47 @@ def send_otp_email(email: str, otp: str):
                 return True
             except Exception as e:
                 print(f"❌ Resend error: {type(e).__name__}: {e}")
-                print(f"   Falling back to Gmail SMTP...\n")
+                print(f"   Falling back to SMTP...\n")
         
-        # Fallback to Gmail SMTP if Resend fails or not configured
-        if GMAIL_CONFIGURED:
+        # Fallback to SMTP if Resend fails or not configured
+        if SMTP_CONFIGURED:
             try:
                 message = MIMEMultipart()
-                message["From"] = GMAIL_USER
+                message["From"] = SMTP_FROM_EMAIL
                 message["To"] = email
                 message["Subject"] = "Your Paper Portal Verification Code"
                 message.attach(MIMEText(html_body, "html"))
                 
-                # Send via Gmail SMTP with timeout
-                with smtplib.SMTP(SMTP_SERVER, SMTP_PORT, timeout=10) as server:
+                # Send via SMTP with timeout
+                with smtplib.SMTP(SMTP_SERVER, SMTP_PORT, timeout=15) as server:
                     server.starttls()
-                    server.login(GMAIL_USER, GMAIL_PASS)
+                    server.login(SMTP_USER, SMTP_PASS)
                     server.send_message(message)
                 
-                print(f"✓ Email sent successfully via Gmail to {email}")
+                print(f"✓ Email sent successfully via SMTP ({SMTP_SERVER}) to {email}")
                 return True
                 
             except smtplib.SMTPAuthenticationError as e:
-                print(f"❌ Gmail authentication failed: {e}")
-                print(f"   Reason: Check GMAIL_USER and GMAIL_PASS in .env")
-                print(f"   Note: Use App Password (not regular Gmail password)")
-                print(f"   Check: https://myaccount.google.com/apppasswords\n")
+                print(f"❌ SMTP authentication failed: {e}")
+                print(f"   Reason: Check SMTP_USER and SMTP_PASS in environment variables")
+                print(f"   Server: {SMTP_SERVER}:{SMTP_PORT}")
+                if "gmail.com" in SMTP_SERVER:
+                    print(f"   Note: For Gmail, use App Password (not regular password)")
+                    print(f"   Check: https://myaccount.google.com/apppasswords\n")
+                else:
+                    print(f"   Note: Verify your SMTP credentials are correct\n")
                 return True
                 
-            except (smtplib.SMTPException, OSError) as e:
-                print(f"❌ Gmail SMTP error: {type(e).__name__}: {e}")
+            except (smtplib.SMTPException, OSError, ConnectionError) as e:
+                print(f"❌ SMTP connection error: {type(e).__name__}: {e}")
+                print(f"   Server: {SMTP_SERVER}:{SMTP_PORT}")
                 print(f"   Note: Some cloud platforms (Render, Railway, etc.) may block SMTP connections")
-                print(f"   Recommendation: Use Resend instead (works on all platforms)")
+                print(f"   Recommendation: Use Resend API or a provider with SMTP relay (SendGrid, Mailgun)")
                 print(f"   Get free API key at https://resend.com\n")
                 return True
             
             except Exception as e:
-                print(f"❌ Unexpected error sending email: {type(e).__name__}: {e}\n")
+                print(f"❌ Unexpected SMTP error: {type(e).__name__}: {e}\n")
                 return True
         
         # If we get here, no email service worked
@@ -698,56 +707,56 @@ def email_health_check():
             "error": "Set RESEND_API_KEY in environment"
         }
     
-    # Check Gmail SMTP
-    if GMAIL_CONFIGURED:
+    # Check SMTP (generic - works with Gmail, SendGrid, Mailgun, etc.)
+    if SMTP_CONFIGURED:
         try:
             # Test SMTP connection without sending email
             with smtplib.SMTP(SMTP_SERVER, SMTP_PORT, timeout=10) as server:
                 server.starttls()
-                server.login(GMAIL_USER, GMAIL_PASS)
+                server.login(SMTP_USER, SMTP_PASS)
             
-            status_info["providers"]["gmail"] = {
+            status_info["providers"]["smtp"] = {
                 "status": "healthy",
-                "email": GMAIL_USER,
+                "email": SMTP_FROM_EMAIL,
                 "smtp_server": SMTP_SERVER,
                 "smtp_port": SMTP_PORT
             }
             
-            # If Resend is not active, Gmail becomes primary
+            # If Resend is not active, SMTP becomes primary
             if not status_info["active_provider"]:
-                status_info["active_provider"] = "gmail"
+                status_info["active_provider"] = "smtp"
         
         except smtplib.SMTPAuthenticationError as e:
-            status_info["providers"]["gmail"] = {
+            status_info["providers"]["smtp"] = {
                 "status": "authentication_failed",
-                "email": GMAIL_USER,
+                "email": SMTP_FROM_EMAIL,
                 "error": "Invalid credentials",
-                "action": "Check GMAIL_USER and GMAIL_PASS, ensure App Password is used"
+                "action": "Check SMTP_USER and SMTP_PASS, ensure credentials are correct"
             }
         
         except (OSError, smtplib.SMTPException) as e:
-            status_info["providers"]["gmail"] = {
+            status_info["providers"]["smtp"] = {
                 "status": "connection_failed",
                 "error": str(e),
                 "note": "Some cloud platforms (Render, Railway, etc.) may block outbound SMTP connections"
             }
         
         except Exception as e:
-            status_info["providers"]["gmail"] = {
+            status_info["providers"]["smtp"] = {
                 "status": "error",
                 "error": str(e)
             }
     else:
-        status_info["providers"]["gmail"] = {
+        status_info["providers"]["smtp"] = {
             "status": "not_configured",
-            "error": "Set GMAIL_USER and GMAIL_PASS in environment"
+            "error": "Set SMTP_SERVER, SMTP_PORT, SMTP_USER, SMTP_PASS in environment"
         }
     
     # Determine overall status
     if status_info["active_provider"]:
         status_info["status"] = "healthy"
         status_info["message"] = f"Email service ready via {status_info['active_provider']}"
-    elif RESEND_AVAILABLE or GMAIL_CONFIGURED:
+    elif RESEND_AVAILABLE or SMTP_CONFIGURED:
         status_info["status"] = "degraded"
         status_info["message"] = "Email service available but not fully configured"
     else:
@@ -869,6 +878,38 @@ def register(user: UserCreate, db: Session = Depends(get_db)):
     db.commit()
     db.refresh(new_user)
     return new_user
+
+@app.post("/create-admin", response_model=UserResponse)
+def create_admin(user: UserCreate, db: Session = Depends(get_db)):
+    """Create an admin user (one-time setup endpoint)"""
+    # Check if user exists
+    db_user = db.query(User).filter(User.email == user.email).first()
+    if db_user:
+        # If user exists, make them admin
+        if not db_user.is_admin:
+            db_user.is_admin = True
+            db_user.email_verified = True
+            if user.password:
+                db_user.password_hash = get_password_hash(user.password)
+            db.commit()
+            db.refresh(db_user)
+            return db_user
+        else:
+            raise HTTPException(status_code=400, detail="User is already an admin")
+    
+    # Create new admin user
+    hashed_password = get_password_hash(user.password)
+    admin_user = User(
+        email=user.email,
+        name=user.name,
+        password_hash=hashed_password,
+        is_admin=True,
+        email_verified=True  # Admins are pre-verified
+    )
+    db.add(admin_user)
+    db.commit()
+    db.refresh(admin_user)
+    return admin_user
 
 @app.post("/login", response_model=Token)
 def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
