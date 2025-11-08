@@ -1,4 +1,5 @@
 # main.py
+from __future__ import annotations  # Enable forward references
 from fastapi import FastAPI, File, UploadFile, Depends, HTTPException, Query, Form, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -297,7 +298,7 @@ class UserResponse(BaseModel):
 class RegisterVerifyResponse(BaseModel):
     access_token: str
     token_type: str
-    user: UserResponse
+    user: "UserResponse"
 
 # OTP Schemas
 class SendOTPRequest(BaseModel):
