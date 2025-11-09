@@ -4,7 +4,7 @@ from fastapi import FastAPI, File, UploadFile, Depends, HTTPException, Query, Fo
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
-from sqlalchemy import create_engine, Column, Integer, String, Boolean, ForeignKey, Text, Enum as SQLEnum, DateTime, text, Index
+from sqlalchemy import create_engine, Column, Integer, String, Boolean, ForeignKey, Text, Enum as SQLEnum, DateTime, text, Index, or_
 from sqlalchemy.orm import declarative_base, Session, sessionmaker, relationship, joinedload
 from pydantic import BaseModel, EmailStr, ConfigDict
 from typing import Optional, List
@@ -1647,10 +1647,21 @@ def get_papers(
     """Get papers with filters"""
     query = db.query(Paper)
     
-    # Non-admins can only see approved papers
+    # Non-admins can only see their own papers (approved or pending)
     if not current_user.is_admin:
-        query = query.filter(Paper.status == SubmissionStatus.APPROVED)
+        # Students should only see papers they uploaded
+        # Explicitly filter by user ID and exclude NULL values
+        query = query.filter(Paper.uploaded_by == current_user.id)
+        query = query.filter(Paper.uploaded_by.isnot(None))  # Exclude NULL values
+        # Only show approved papers (or pending for their own uploads)
+        query = query.filter(
+            or_(
+                Paper.status == SubmissionStatus.APPROVED,
+                Paper.status == SubmissionStatus.PENDING
+            )
+        )
     elif status:
+        # Admins can filter by status
         query = query.filter(Paper.status == status)
     
     # Apply filters
