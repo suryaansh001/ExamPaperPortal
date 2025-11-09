@@ -115,8 +115,30 @@ def send_otp_email(to: str, otp: str) -> bool:
         print(f"   Check SMTP_USER and SMTP_PASS credentials")
         return False
     except (smtplib.SMTPException, OSError, ConnectionError) as e:
-        print(f"❌ Email send error: {e}")
+        error_msg = str(e)
+        print(f"❌ Email send error: {error_msg}")
         print(f"   Server: {SMTP_SERVER}:{SMTP_PORT}")
+        
+        # Check if it's a network unreachable error (common on cloud platforms)
+        if "Network is unreachable" in error_msg or "Errno 101" in error_msg:
+            print(f"\n   ⚠️  SMTP is blocked on this platform (common on Render, Railway, etc.)")
+            print(f"   Solutions:")
+            print(f"   1. Use Resend SMTP (works on cloud platforms) - RECOMMENDED")
+            print(f"      Add to .env:")
+            print(f"      SMTP_SERVER=smtp.resend.com")
+            print(f"      SMTP_PORT=587")
+            print(f"      SMTP_USER=resend")
+            print(f"      SMTP_PASS=your_resend_api_key_here")
+            print(f"      SMTP_FROM_EMAIL=onboarding@resend.dev")
+            print(f"      (Use your existing RESEND_API_KEY as SMTP_PASS)")
+            print(f"")
+            print(f"   2. Verify domain with Resend (for production)")
+            print(f"      - Verify domain at https://resend.com/domains")
+            print(f"      - Update RESEND_FROM_EMAIL to use your domain")
+            print(f"")
+            print(f"   3. Use SendGrid or Mailgun (work on cloud platforms)")
+            print(f"")
+        
         return False
     except Exception as e:
         print(f"❌ Email send error: {type(e).__name__}: {e}")
