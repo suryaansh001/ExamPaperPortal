@@ -3,7 +3,7 @@ from __future__ import annotations  # Enable forward references
 from fastapi import FastAPI, File, UploadFile, Depends, HTTPException, Query, Form, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
+from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm, HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy import create_engine, Column, Integer, String, Boolean, ForeignKey, Text, Enum as SQLEnum, DateTime, text, Index, or_
 from sqlalchemy.orm import declarative_base, Session, sessionmaker, relationship, joinedload
 from pydantic import BaseModel, EmailStr, ConfigDict
@@ -122,6 +122,7 @@ pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 # OAuth2 scheme
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="login")
+optional_oauth2_scheme = HTTPBearer(auto_error=False)
 
 # Create uploads directory
 UPLOAD_DIR_STR = os.getenv("UPLOAD_DIR", "uploads")
@@ -697,6 +698,26 @@ def require_admin(current_user: User = Depends(get_current_user)):
     if not current_user.is_admin:
         raise HTTPException(status_code=403, detail="Admin access required")
     return current_user
+
+async def get_current_user_optional(
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(optional_oauth2_scheme), 
+    db: Session = Depends(get_db)
+) -> Optional[User]:
+    """Get current user if token is provided, otherwise return None"""
+    if not credentials:
+        return None
+    try:
+        token = credentials.credentials
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        email: str = payload.get("sub")
+        if email is None:
+            return None
+        token_data = TokenData(email=email)
+    except JWTError:
+        return None
+    
+    user = db.query(User).filter(User.email == token_data.email).first()
+    return user
 
 # ========== FastAPI App ==========
 app = FastAPI(title="Paper Portal API", version="2.0.0")
@@ -1859,15 +1880,22 @@ def preview_paper(paper_id: int, db: Session = Depends(get_db)):
     }
 
 @app.get("/papers/{paper_id}/download")
-def download_paper(paper_id: int, db: Session = Depends(get_db)):
-    """Download paper file - Public access for approved papers"""
+async def download_paper(
+    paper_id: int, 
+    db: Session = Depends(get_db),
+    current_user: Optional[User] = Depends(get_current_user_optional)
+):
+    """Download paper file - Public access for approved papers, admin access for pending papers"""
     paper = db.query(Paper).filter(Paper.id == paper_id).first()
     if not paper:
         raise HTTPException(status_code=404, detail="Paper not found")
     
-    # Only approved papers can be downloaded without authentication
+    # Check access permissions
+    # Admins can download any paper (including pending)
+    # Non-admins can only download approved papers
     if paper.status != SubmissionStatus.APPROVED:
-        raise HTTPException(status_code=403, detail="Paper not approved yet")
+        if not current_user or not current_user.is_admin:
+            raise HTTPException(status_code=403, detail="Paper not approved yet")
     
     # Construct file path - handle both absolute and relative paths
     file_path = paper.file_path
