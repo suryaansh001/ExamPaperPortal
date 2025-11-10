@@ -1923,23 +1923,79 @@ def preview_paper(paper_id: int, db: Session = Depends(get_db)):
     
     # Extract filename from stored path and check if file exists
     stored_path = paper.file_path
+    
+    # Extract just the filename from the stored path
     if os.path.isabs(stored_path):
-        # Extract filename from absolute path
+        # If it's an absolute path, extract just the filename
         filename = Path(stored_path).name
     else:
-        # Extract filename from relative path
-        filename = Path(stored_path).name
-        if 'uploads/' in stored_path or 'uploads\\' in stored_path:
-            filename = Path(stored_path.replace('uploads/', '').replace('uploads\\', '')).name
-    
-    # Check if file exists in current UPLOAD_DIR
-    file_path = UPLOAD_DIR / filename
-    if not file_path.exists():
-        # Try stored path as-is if it's relative
-        if not os.path.isabs(stored_path) and os.path.exists(stored_path):
-            file_path = Path(stored_path)
+        # If it's relative, extract filename (remove 'uploads/' prefix if present)
+        if stored_path.startswith('uploads/') or stored_path.startswith('uploads\\'):
+            # Remove 'uploads/' prefix
+            filename = stored_path.replace('uploads/', '').replace('uploads\\', '')
+            # Normalize path separators and get just the filename
+            filename = Path(filename).name
         else:
-            raise HTTPException(status_code=404, detail=f"File not found on server. Expected: {file_path}")
+            # Already just filename or relative path without uploads/
+            filename = Path(stored_path).name
+    
+    # Try multiple possible file locations
+    possible_paths = [
+        UPLOAD_DIR / filename,  # Standard location: uploads/filename
+        Path(stored_path) if not os.path.isabs(stored_path) else None,  # Stored path as-is (if relative)
+    ]
+    
+    # Only add UPLOAD_DIR / stored_path if stored_path doesn't already start with uploads/
+    if not os.path.isabs(stored_path) and not stored_path.startswith('uploads/') and not stored_path.startswith('uploads\\'):
+        possible_paths.append(UPLOAD_DIR / stored_path)
+    
+    # Filter out None values
+    possible_paths = [p for p in possible_paths if p is not None]
+    
+    # Try each possible path
+    file_path = None
+    for path in possible_paths:
+        try:
+            resolved_path = path.resolve()
+            # Security: Ensure file is within uploads directory
+            uploads_dir = UPLOAD_DIR.resolve()
+            if str(resolved_path).startswith(str(uploads_dir)) and resolved_path.exists() and resolved_path.is_file():
+                file_path = resolved_path
+                break
+        except Exception:
+            continue
+    
+    # If still not found, raise error with helpful debugging info
+    if not file_path or not file_path.exists():
+        # List files in uploads directory for debugging
+        uploads_files = []
+        uploads_dir_path = str(UPLOAD_DIR.resolve())
+        try:
+            if UPLOAD_DIR.exists():
+                uploads_files = [f.name for f in UPLOAD_DIR.iterdir() if f.is_file()][:20]  # First 20 files
+        except Exception as e:
+            print(f"Error listing uploads directory: {e}")
+        
+        # Log detailed debugging info
+        print(f"\n{'='*60}")
+        print(f"FILE NOT FOUND DEBUG INFO (Preview):")
+        print(f"  Paper ID: {paper_id}")
+        print(f"  Stored path: {stored_path}")
+        print(f"  Extracted filename: {filename}")
+        print(f"  UPLOAD_DIR: {uploads_dir_path}")
+        print(f"  Tried paths: {[str(p) for p in possible_paths]}")
+        print(f"  Files in uploads/: {len(uploads_files)} files")
+        if uploads_files:
+            print(f"  Sample files: {uploads_files[:5]}")
+        print(f"{'='*60}\n")
+        
+        error_detail = f"File not found on server. Expected filename: {filename}. Stored path: {stored_path}. Uploads directory: {uploads_dir_path}"
+        if uploads_files:
+            error_detail += f". Found {len(uploads_files)} files in uploads/ (sample: {', '.join(uploads_files[:3])})"
+        else:
+            error_detail += ". Uploads directory is empty or not accessible."
+        
+        raise HTTPException(status_code=404, detail=error_detail)
     
     # Get MIME type
     mime_type = get_mime_type(paper.file_name)
@@ -1982,29 +2038,73 @@ async def download_paper(
         filename = Path(stored_path).name
     else:
         # If it's relative, extract filename (remove 'uploads/' prefix if present)
-        filename = Path(stored_path).name
-        # Remove 'uploads/' prefix if present
-        if 'uploads/' in stored_path or 'uploads\\' in stored_path:
-            filename = Path(stored_path.replace('uploads/', '').replace('uploads\\', '')).name
-    
-    # Reconstruct path relative to current UPLOAD_DIR
-    file_path = UPLOAD_DIR / filename
-    
-    # Try to find the file - check multiple possible locations
-    if not file_path.exists():
-        # Try with the stored path as-is (in case it's relative and correct)
-        if not os.path.isabs(stored_path) and os.path.exists(stored_path):
-            file_path = Path(stored_path)
+        # Handle paths like "uploads/filename.pdf" or just "filename.pdf"
+        if stored_path.startswith('uploads/') or stored_path.startswith('uploads\\'):
+            # Remove 'uploads/' prefix
+            filename = stored_path.replace('uploads/', '').replace('uploads\\', '')
+            # Normalize path separators and get just the filename
+            filename = Path(filename).name
         else:
-            # Last attempt: try to find by filename in uploads directory
-            # This handles cases where files were moved or paths changed
-            potential_path = UPLOAD_DIR / filename
-            if not potential_path.exists():
-                raise HTTPException(
-                    status_code=404, 
-                    detail=f"File not found on server. Expected: {file_path}. Stored path: {stored_path}"
-                )
-            file_path = potential_path
+            # Already just filename or relative path without uploads/
+            filename = Path(stored_path).name
+    
+    # Try multiple possible file locations
+    possible_paths = [
+        UPLOAD_DIR / filename,  # Standard location: uploads/filename
+        Path(stored_path) if not os.path.isabs(stored_path) else None,  # Stored path as-is (if relative)
+    ]
+    
+    # Only add UPLOAD_DIR / stored_path if stored_path doesn't already start with uploads/
+    if not os.path.isabs(stored_path) and not stored_path.startswith('uploads/') and not stored_path.startswith('uploads\\'):
+        possible_paths.append(UPLOAD_DIR / stored_path)
+    
+    # Filter out None values
+    possible_paths = [p for p in possible_paths if p is not None]
+    
+    # Try each possible path
+    file_path = None
+    for path in possible_paths:
+        try:
+            resolved_path = path.resolve()
+            # Security: Ensure file is within uploads directory
+            uploads_dir = UPLOAD_DIR.resolve()
+            if str(resolved_path).startswith(str(uploads_dir)) and resolved_path.exists() and resolved_path.is_file():
+                file_path = resolved_path
+                break
+        except Exception:
+            continue
+    
+    # If still not found, raise error with helpful message
+    if not file_path or not file_path.exists():
+        # List files in uploads directory for debugging
+        uploads_files = []
+        uploads_dir_path = str(UPLOAD_DIR.resolve())
+        try:
+            if UPLOAD_DIR.exists():
+                uploads_files = [f.name for f in UPLOAD_DIR.iterdir() if f.is_file()][:20]  # First 20 files
+        except Exception as e:
+            print(f"Error listing uploads directory: {e}")
+        
+        # Log detailed debugging info
+        print(f"\n{'='*60}")
+        print(f"FILE NOT FOUND DEBUG INFO:")
+        print(f"  Paper ID: {paper_id}")
+        print(f"  Stored path: {stored_path}")
+        print(f"  Extracted filename: {filename}")
+        print(f"  UPLOAD_DIR: {uploads_dir_path}")
+        print(f"  Tried paths: {[str(p) for p in possible_paths]}")
+        print(f"  Files in uploads/: {len(uploads_files)} files")
+        if uploads_files:
+            print(f"  Sample files: {uploads_files[:5]}")
+        print(f"{'='*60}\n")
+        
+        error_detail = f"File not found on server. Expected filename: {filename}. Stored path: {stored_path}. Uploads directory: {uploads_dir_path}"
+        if uploads_files:
+            error_detail += f". Found {len(uploads_files)} files in uploads/ (sample: {', '.join(uploads_files[:3])})"
+        else:
+            error_detail += ". Uploads directory is empty or not accessible."
+        
+        raise HTTPException(status_code=404, detail=error_detail)
     
     # Resolve to absolute path for security check
     try:
@@ -2026,6 +2126,58 @@ async def download_paper(
     
     from fastapi.responses import FileResponse
     return FileResponse(str(file_path), filename=paper.file_name)
+
+@app.get("/admin/diagnose/files")
+def diagnose_files(
+    db: Session = Depends(get_db),
+    admin: User = Depends(require_admin)
+):
+    """Diagnostic endpoint to check file status for all papers"""
+    papers = db.query(Paper).all()
+    
+    results = []
+    uploads_dir_path = str(UPLOAD_DIR.resolve())
+    
+    # Get list of actual files on disk
+    files_on_disk = set()
+    try:
+        if UPLOAD_DIR.exists():
+            files_on_disk = {f.name for f in UPLOAD_DIR.iterdir() if f.is_file()}
+    except Exception as e:
+        print(f"Error listing uploads directory: {e}")
+    
+    for paper in papers:
+        stored_path = paper.file_path
+        
+        # Extract filename using same logic as download endpoint
+        if os.path.isabs(stored_path):
+            filename = Path(stored_path).name
+        else:
+            if stored_path.startswith('uploads/') or stored_path.startswith('uploads\\'):
+                filename = stored_path.replace('uploads/', '').replace('uploads\\', '')
+                filename = Path(filename).name
+            else:
+                filename = Path(stored_path).name
+        
+        # Check if file exists
+        file_exists = filename in files_on_disk
+        
+        results.append({
+            "paper_id": paper.id,
+            "paper_title": paper.title,
+            "stored_path": stored_path,
+            "extracted_filename": filename,
+            "file_exists": file_exists,
+            "status": paper.status.value
+        })
+    
+    return {
+        "uploads_directory": uploads_dir_path,
+        "total_papers": len(results),
+        "files_on_disk_count": len(files_on_disk),
+        "papers_with_missing_files": sum(1 for r in results if not r["file_exists"]),
+        "papers": results
+    }
 
 # ========== Helper Functions ==========
 def format_user_response(user: User) -> dict:
