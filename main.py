@@ -16,6 +16,7 @@ from pathlib import Path
 from passlib.context import CryptContext
 from jose import JWTError, jwt
 from dotenv import load_dotenv
+import httpx
 import random
 import string
 import smtplib
@@ -40,6 +41,7 @@ ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24  # 24 hours
 
 # Email Configuration - Support Resend (primary) and SMTP (fallback)
+EMAIL_SERVICE_URL = os.getenv("EMAIL_SERVICE_URL", "").strip()  # Optional external mailer (e.g., Nodemailer service)
 RESEND_API_KEY = os.getenv("RESEND_API_KEY", "re_W7dx377D_4VR7e4gGzoAgs8uFUhCpcPGj").strip()
 RESEND_FROM_EMAIL = os.getenv("RESEND_FROM_EMAIL", "onboarding@resend.dev").strip()
 
@@ -53,7 +55,7 @@ SMTP_FROM_EMAIL = os.getenv("SMTP_FROM_EMAIL", SMTP_USER).strip()  # From email 
 # Validate email configuration on startup
 RESEND_CONFIGURED = bool(RESEND_API_KEY and RESEND_AVAILABLE)
 SMTP_CONFIGURED = bool(SMTP_USER and SMTP_PASS and SMTP_SERVER and not SMTP_USER.startswith("your-") and not SMTP_PASS.startswith("your-"))
-EMAIL_CONFIGURED = RESEND_CONFIGURED or SMTP_CONFIGURED
+EMAIL_CONFIGURED = bool(EMAIL_SERVICE_URL) or RESEND_CONFIGURED or SMTP_CONFIGURED
 
 if not EMAIL_CONFIGURED:
     print("\n⚠️  WARNING: Email not configured!")
@@ -61,6 +63,9 @@ if not EMAIL_CONFIGURED:
     print("   Option 2: Set SMTP_SERVER, SMTP_PORT, SMTP_USER, SMTP_PASS")
     print("   OTP emails will be printed to console only for now")
     print("\n")
+elif EMAIL_SERVICE_URL:
+    print("\n✓ External Email Service configured")
+    print(f"   Service URL: {EMAIL_SERVICE_URL}")
 elif RESEND_CONFIGURED:
     print("\n✓ Resend email service configured")
     print(f"   API Key: {'*' * 10}{RESEND_API_KEY[-4:] if len(RESEND_API_KEY) > 4 else '****'}")
@@ -636,7 +641,29 @@ Your verification code is: {otp}
 This code expires in 10 minutes. If you didn't request this code, you can ignore this email.
 """
         
-        # Try Resend first (recommended for production)
+        # 0) Preferred: External Nodemailer service (if configured)
+        if EMAIL_SERVICE_URL:
+            try:
+                payload = {
+                    "to": email,
+                    "from": RESEND_FROM_EMAIL,
+                    "subject": "Your Paper Portal Verification Code",
+                    "html": html_body,
+                    "text": text_body
+                }
+                with httpx.Client(timeout=10) as client:
+                    r = client.post(f"{EMAIL_SERVICE_URL.rstrip('/')}/send-email", json=payload)
+                    if r.status_code >= 200 and r.status_code < 300:
+                        print(f"✓ Email sent successfully via External Mailer to {email}")
+                        return True
+                    else:
+                        print(f"❌ External Mailer error: {r.status_code} {r.text}")
+                        print(f"   Falling back to Resend/SMTP...\n")
+            except Exception as e:
+                print(f"❌ External Mailer request failed: {type(e).__name__}: {e}")
+                print(f"   Falling back to Resend/SMTP...\n")
+
+        # 1) Try Resend API
         if RESEND_CONFIGURED:
             try:
                 # Send email via Resend API
@@ -684,7 +711,7 @@ This code expires in 10 minutes. If you didn't request this code, you can ignore
                 
                 print(f"   Falling back to SMTP...\n")
         
-        # Fallback to SMTP if Resend fails or not configured
+        # 2) Fallback to SMTP (generic or Resend SMTP)
         # Prefer configured SMTP first; else, if we have a RESEND_API_KEY, attempt Resend SMTP smart fallback
         use_smart_resend_smtp = False
         smtp_server = SMTP_SERVER
