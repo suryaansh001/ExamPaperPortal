@@ -40,7 +40,7 @@ ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24  # 24 hours
 
 # Email Configuration - Support Resend (primary) and SMTP (fallback)
-RESEND_API_KEY = os.getenv("RESEND_API_KEY", "").strip()
+RESEND_API_KEY = os.getenv("RESEND_API_KEY", "re_W7dx377D_4VR7e4gGzoAgs8uFUhCpcPGj").strip()
 RESEND_FROM_EMAIL = os.getenv("RESEND_FROM_EMAIL", "onboarding@resend.dev").strip()
 
 # Generic SMTP Configuration (works with Gmail, SendGrid, Mailgun, Outlook, etc.)
