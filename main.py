@@ -632,16 +632,47 @@ def send_otp_email(email: str, otp: str):
         # Try Resend first (recommended for production)
         if RESEND_CONFIGURED:
             try:
+                # Send email via Resend API
                 email_response = resend.Emails.send({
                     "from": RESEND_FROM_EMAIL,
                     "to": [email],
                     "subject": "Your Paper Portal Verification Code",
                     "html": html_body
                 })
-                print(f"✓ Email sent successfully via Resend to {email}")
-                return True
+                
+                # Check if response is valid (Resend returns dict with 'id' or 'error')
+                if email_response and isinstance(email_response, dict):
+                    if 'id' in email_response:
+                        print(f"✓ Email sent successfully via Resend to {email} (ID: {email_response.get('id', 'N/A')})")
+                        return True
+                    elif 'error' in email_response:
+                        error_msg = email_response.get('error', {}).get('message', 'Unknown error')
+                        print(f"❌ Resend API error: {error_msg}")
+                        print(f"   Falling back to SMTP...\n")
+                    else:
+                        # Response received but format unexpected
+                        print(f"✓ Email sent via Resend to {email}")
+                        return True
+                else:
+                    # Response is None or unexpected format - assume success
+                    print(f"✓ Email sent via Resend to {email}")
+                    return True
+                    
             except Exception as e:
-                print(f"❌ Resend error: {type(e).__name__}: {e}")
+                error_msg = str(e)
+                print(f"❌ Resend error: {type(e).__name__}: {error_msg}")
+                
+                # Check for specific error types and provide helpful messages
+                if "403" in error_msg or "Forbidden" in error_msg:
+                    print(f"   Reason: API key may not have permission or is invalid")
+                    print(f"   Check: https://resend.com/api-keys")
+                    print(f"   Note: onboarding@resend.dev only works for your account email")
+                elif "422" in error_msg or "validation" in error_msg.lower():
+                    print(f"   Reason: Invalid request format or email address")
+                elif "domain" in error_msg.lower() or "not verified" in error_msg.lower():
+                    print(f"   Reason: Domain not verified. onboarding@resend.dev only works for your account email")
+                    print(f"   Solution: Use Resend SMTP (configure SMTP_SERVER=smtp.resend.com) or verify a domain")
+                
                 print(f"   Falling back to SMTP...\n")
         
         # Fallback to SMTP if Resend fails or not configured
