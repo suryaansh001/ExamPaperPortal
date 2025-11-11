@@ -4,7 +4,7 @@ from fastapi import FastAPI, File, UploadFile, Depends, HTTPException, Query, Fo
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm, HTTPBearer, HTTPAuthorizationCredentials
-from sqlalchemy import create_engine, Column, Integer, String, Boolean, ForeignKey, Text, Enum as SQLEnum, DateTime, text, Index, or_
+from sqlalchemy import create_engine, Column, Integer, String, Boolean, ForeignKey, Text, Enum as SQLEnum, DateTime, text, Index, or_, LargeBinary
 from sqlalchemy.orm import declarative_base, Session, sessionmaker, relationship, joinedload
 from pydantic import BaseModel, EmailStr, ConfigDict, field_validator
 from typing import Optional, List
@@ -205,8 +205,10 @@ class User(Base):
     department = Column(String(255), nullable=True)
     roll_no = Column(String(100), nullable=True)
     student_id = Column(String(100), nullable=True)
-    photo_path = Column(String(500), nullable=True)
-    id_card_path = Column(String(500), nullable=True)
+    photo_path = Column(String(500), nullable=True)  # Kept for backward compatibility
+    id_card_path = Column(String(500), nullable=True)  # Kept for backward compatibility
+    photo_data = Column(LargeBinary, nullable=True)  # Store file content in database
+    id_card_data = Column(LargeBinary, nullable=True)  # Store file content in database
     id_verified = Column(Boolean, default=False)
     verified_by = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     verified_at = Column(DateTime, nullable=True)
@@ -240,9 +242,10 @@ class Paper(Base):
     year = Column(Integer, index=True)
     semester = Column(String(20), index=True)
     
-    file_path = Column(String(500), nullable=False)
+    file_path = Column(String(500), nullable=True)  # Kept for backward compatibility, now nullable
     file_name = Column(String(255), nullable=False)
     file_size = Column(Integer)
+    file_data = Column(LargeBinary, nullable=True)  # Store file content in database
     
     status = Column(SQLEnum(SubmissionStatus), default=SubmissionStatus.PENDING, index=True)
     reviewed_by = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"))
@@ -938,37 +941,109 @@ app.add_middleware(
 
 # API endpoint to serve uploaded files (works better on cloud platforms)
 @app.get("/uploads/{filename:path}")
-async def serve_uploaded_file(filename: str):
+async def serve_uploaded_file(filename: str, db: Session = Depends(get_db)):
     """
     Serve uploaded files (photos, ID cards, papers)
-    This endpoint works better on cloud platforms than static file mount
+    First checks database, then falls back to filesystem for backward compatibility
     """
-    from fastapi.responses import FileResponse
+    from fastapi.responses import Response
     
-    # Use helper function to find file (handles path variations from different databases)
+    # Try to find file in database first
+    # Check if it's a user photo or ID card
+    if filename.startswith("photo_"):
+        # Extract user ID from filename (format: photo_{user_id}_{timestamp}.ext)
+        try:
+            parts = filename.replace("photo_", "").split("_")
+            if parts:
+                user_id = int(parts[0])
+                user = db.query(User).filter(User.id == user_id).first()
+                if user and user.photo_data:
+                    ext = Path(filename).suffix.lower()
+                    media_type = get_mime_type_from_ext(ext)
+                    return Response(
+                        content=user.photo_data,
+                        media_type=media_type,
+                        headers={"Content-Disposition": f'inline; filename="{Path(filename).name}"'}
+                    )
+        except (ValueError, IndexError):
+            pass
+    
+    if filename.startswith("id_"):
+        # Extract user ID from filename (format: id_{user_id}_{timestamp}.ext)
+        try:
+            parts = filename.replace("id_", "").split("_")
+            if parts:
+                user_id = int(parts[0])
+                user = db.query(User).filter(User.id == user_id).first()
+                if user and user.id_card_data:
+                    ext = Path(filename).suffix.lower()
+                    media_type = get_mime_type_from_ext(ext)
+                    return Response(
+                        content=user.id_card_data,
+                        media_type=media_type,
+                        headers={"Content-Disposition": f'inline; filename="{Path(filename).name}"'}
+                    )
+        except (ValueError, IndexError):
+            pass
+    
+    # Check papers - look for files with timestamp prefix
+    # Try exact match first
+    papers = db.query(Paper).filter(Paper.file_path == filename).all()
+    
+    # If no exact match, try URL-decoded version
+    if not papers:
+        from urllib.parse import unquote
+        decoded_filename = unquote(filename)
+        if decoded_filename != filename:
+            papers = db.query(Paper).filter(Paper.file_path == decoded_filename).all()
+    
+    # If still no match, try matching by extracting filename from stored path
+    # (handles cases where file_path might have been normalized differently)
+    if not papers:
+        # Try to find papers where the filename matches the end of file_path
+        all_papers = db.query(Paper).filter(Paper.file_data.isnot(None)).all()
+        for paper in all_papers:
+            if paper.file_path:
+                # Check if the requested filename matches the stored file_path
+                if paper.file_path == filename or paper.file_path.endswith(filename):
+                    papers = [paper]
+                    break
+                # Also check if the original filename matches
+                if paper.file_name == filename or paper.file_name == Path(filename).name:
+                    papers = [paper]
+                    break
+    
+    if papers:
+        paper = papers[0]  # Get first match
+        if paper.file_data:
+            media_type = get_mime_type(paper.file_name)
+            return Response(
+                content=paper.file_data,
+                media_type=media_type,
+                headers={"Content-Disposition": f'inline; filename="{paper.file_name}"'}
+            )
+    
+    # Fallback to filesystem for backward compatibility (old files)
+    from fastapi.responses import FileResponse
     file_path = find_file_in_uploads(filename)
     
-    # If not found, try direct path as fallback
     if not file_path or not file_path.exists():
-        # Try direct path construction
         direct_path = UPLOAD_DIR / filename
         try:
             resolved_path = direct_path.resolve()
             uploads_dir = UPLOAD_DIR.resolve()
-            # Security: Ensure file is within uploads directory
             if str(resolved_path).startswith(str(uploads_dir)) and resolved_path.exists() and resolved_path.is_file():
                 file_path = resolved_path
         except Exception:
             pass
     
-    # If still not found, return clear error
     if not file_path or not file_path.exists():
         raise HTTPException(
             status_code=404, 
-            detail=f"File not found. The file '{filename}' may have been stored in a previous database and is no longer available."
+            detail=f"File not found: '{filename}'"
         )
     
-    # Final security check
+    # Security check
     try:
         file_path = file_path.resolve()
         uploads_dir = UPLOAD_DIR.resolve()
@@ -977,25 +1052,28 @@ async def serve_uploaded_file(filename: str):
     except Exception:
         raise HTTPException(status_code=403, detail="Invalid file path")
     
-    # Determine media type
     ext = Path(filename).suffix.lower()
-    media_type = None
-    if ext in {'.jpg', '.jpeg'}:
-        media_type = 'image/jpeg'
-    elif ext == '.png':
-        media_type = 'image/png'
-    elif ext == '.pdf':
-        media_type = 'application/pdf'
-    elif ext == '.gif':
-        media_type = 'image/gif'
-    elif ext == '.webp':
-        media_type = 'image/webp'
+    media_type = get_mime_type_from_ext(ext)
     
     return FileResponse(
         str(file_path),
         media_type=media_type,
         filename=Path(filename).name
     )
+
+def get_mime_type_from_ext(ext: str) -> str:
+    """Get MIME type from file extension"""
+    mime_map = {
+        '.jpg': 'image/jpeg',
+        '.jpeg': 'image/jpeg',
+        '.png': 'image/png',
+        '.pdf': 'application/pdf',
+        '.gif': 'image/gif',
+        '.webp': 'image/webp',
+        '.doc': 'application/msword',
+        '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    }
+    return mime_map.get(ext.lower(), 'application/octet-stream')
 
 # Mount uploads directory as static files for direct serving (fallback for local development)
 # This allows frontend to access files directly via /uploads/{filename}
@@ -1627,11 +1705,13 @@ async def upload_photo(
     ext = Path(file.filename).suffix.lower()
     if ext not in allowed:
         raise HTTPException(status_code=400, detail="Invalid image type")
-    save_path = UPLOAD_DIR / f"photo_{current_user.id}_{int(datetime.now(timezone.utc).timestamp())}{ext}"
-    with save_path.open("wb") as buffer:
-        shutil.copyfileobj(file.file, buffer)
-    # Store only filename to avoid absolute path issues
-    current_user.photo_path = save_path.name
+    
+    # Read file content into memory
+    file_content = await file.read()
+    
+    # Store file data in database
+    current_user.photo_data = file_content
+    current_user.photo_path = f"photo_{current_user.id}_{int(datetime.now(timezone.utc).timestamp())}{ext}"  # Keep for reference
     db.commit()
     db.refresh(current_user)
     return current_user
@@ -1647,11 +1727,13 @@ async def upload_id_card(
     ext = Path(file.filename).suffix.lower()
     if ext not in allowed:
         raise HTTPException(status_code=400, detail="Invalid file type")
-    save_path = UPLOAD_DIR / f"id_{current_user.id}_{int(datetime.now(timezone.utc).timestamp())}{ext}"
-    with save_path.open("wb") as buffer:
-        shutil.copyfileobj(file.file, buffer)
-    # Store only filename to avoid absolute path issues
-    current_user.id_card_path = save_path.name
+    
+    # Read file content into memory
+    file_content = await file.read()
+    
+    # Store file data in database
+    current_user.id_card_data = file_content
+    current_user.id_card_path = f"id_{current_user.id}_{int(datetime.now(timezone.utc).timestamp())}{ext}"  # Keep for reference
     current_user.id_verified = False
     current_user.verified_by = None
     current_user.verified_at = None
@@ -1662,7 +1744,14 @@ async def upload_id_card(
 
 @app.get("/admin/verification-requests", response_model=List[UserResponse])
 def list_verification_requests(db: Session = Depends(get_db), admin: User = Depends(require_admin)):
-    users = db.query(User).filter(User.id_card_path.isnot(None), User.id_verified == False).all()
+    # Check for users with ID cards (either in database or filesystem)
+    users = db.query(User).filter(
+        or_(
+            User.id_card_data.isnot(None),
+            User.id_card_path.isnot(None)
+        ),
+        User.id_verified == False
+    ).all()
     return users
 
 
@@ -1871,17 +1960,15 @@ async def upload_paper(
     if file_ext not in allowed_extensions:
         raise HTTPException(status_code=400, detail="Invalid file type")
     
-    # Save file with timestamp prefix to avoid conflicts
+    # Read file content into memory
+    file_content = await file.read()
+    file_size = len(file_content)
+    
+    # Generate filename with timestamp prefix for reference
     timestamp = datetime.now(timezone.utc).timestamp()
-    file_path = UPLOAD_DIR / f"{timestamp}_{file.filename}"
-    with file_path.open("wb") as buffer:
-        shutil.copyfileobj(file.file, buffer)
+    stored_file_path = f"{timestamp}_{file.filename}"
     
-    # Store the full filename (with timestamp) to ensure we can find it later
-    # This ensures files work across different environments (local, Render, etc.)
-    stored_file_path = file_path.name  # Just the filename with timestamp, not the full path
-    
-    # Create paper record
+    # Create paper record with file data stored in database
     paper = Paper(
         course_id=course.id,
         uploaded_by=current_user.id,
@@ -1890,9 +1977,10 @@ async def upload_paper(
         paper_type=paper_type,
         year=year,
         semester=semester,
-        file_path=stored_file_path,  # Store only filename
+        file_path=stored_file_path,  # Keep for reference/backward compatibility
         file_name=file.filename,
-        file_size=file_path.stat().st_size,
+        file_size=file_size,
+        file_data=file_content,  # Store file content in database
         status=SubmissionStatus.PENDING
     )
     
@@ -2089,11 +2177,15 @@ def delete_paper(paper_id: int, db: Session = Depends(get_db), admin: User = Dep
     if not paper:
         raise HTTPException(status_code=404, detail="Paper not found")
     
-    # Delete file
-    try:
-        os.remove(paper.file_path)
-    except OSError as e:
-        print(f"Warning: Could not delete file {paper.file_path}: {e}")
+    # File is stored in database, so no need to delete from filesystem
+    # Only delete from filesystem if it exists there (backward compatibility)
+    if paper.file_path:
+        try:
+            file_path = find_file_in_uploads(paper.file_path)
+            if file_path and file_path.exists():
+                os.remove(file_path)
+        except OSError as e:
+            print(f"Warning: Could not delete file {paper.file_path}: {e}")
     
     db.delete(paper)
     db.commit()
@@ -2117,16 +2209,17 @@ def preview_paper(
         if not current_user or not current_user.is_admin:
             raise HTTPException(status_code=403, detail="Paper not approved yet")
     
-    # Check if file exists using helper function
-    stored_path = paper.file_path
-    file_path = find_file_in_uploads(stored_path) if stored_path else None
-    
-    # If file not found, return clear error indicating it's from old database
-    if not file_path or not file_path.exists():
-        raise HTTPException(
-            status_code=404, 
-            detail=f"File not found. This paper's file was stored in a previous database and is no longer available. Paper ID: {paper_id}, Stored path: {stored_path}"
-        )
+    # Check if file exists in database
+    if not paper.file_data:
+        # Fallback: check filesystem for backward compatibility
+        stored_path = paper.file_path
+        file_path = find_file_in_uploads(stored_path) if stored_path else None
+        
+        if not file_path or not file_path.exists():
+            raise HTTPException(
+                status_code=404, 
+                detail=f"File not found. This paper's file was stored in a previous database and is no longer available. Paper ID: {paper_id}, Stored path: {stored_path}"
+            )
     
     # Get MIME type
     mime_type = get_mime_type(paper.file_name)
@@ -2134,7 +2227,7 @@ def preview_paper(
     return {
         "paper_id": paper.id,
         "file_name": paper.file_name,
-        "file_path": paper.file_path,
+        "file_path": paper.file_path or "",
         "file_size": paper.file_size,
         "mime_type": mime_type,
         "can_preview": can_preview_file(paper.file_name)
@@ -2158,11 +2251,21 @@ async def download_paper(
         if not current_user or not current_user.is_admin:
             raise HTTPException(status_code=403, detail="Paper not approved yet")
     
-    # Check if file exists using helper function
+    # Check if file exists in database
+    if paper.file_data:
+        # Serve from database
+        from fastapi.responses import Response
+        mime_type = get_mime_type(paper.file_name)
+        return Response(
+            content=paper.file_data,
+            media_type=mime_type,
+            headers={"Content-Disposition": f'attachment; filename="{paper.file_name}"'}
+        )
+    
+    # Fallback: check filesystem for backward compatibility
     stored_path = paper.file_path
     file_path = find_file_in_uploads(stored_path) if stored_path else None
     
-    # If file not found, return clear error indicating it's from old database
     if not file_path or not file_path.exists():
         raise HTTPException(
             status_code=404, 
@@ -2204,9 +2307,15 @@ def diagnose_files(
     for paper in papers:
         stored_path = paper.file_path
         
-        # Use helper function to check if file exists
+        # Check if file exists in database
+        file_in_db = paper.file_data is not None
+        
+        # Use helper function to check if file exists in filesystem (backward compatibility)
         file_path = find_file_in_uploads(stored_path) if stored_path else None
-        file_exists = file_path is not None and file_path.exists()
+        file_exists_fs = file_path is not None and file_path.exists()
+        
+        # File exists if it's in database OR filesystem
+        file_exists = file_in_db or file_exists_fs
         
         # Extract filename for display
         filename = Path(stored_path).name if stored_path else None
@@ -2217,6 +2326,8 @@ def diagnose_files(
             "stored_path": stored_path,
             "extracted_filename": filename,
             "file_exists": file_exists,
+            "file_in_database": file_in_db,
+            "file_in_filesystem": file_exists_fs,
             "status": paper.status.value
         })
     
