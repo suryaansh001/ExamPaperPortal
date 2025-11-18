@@ -4,7 +4,7 @@ from fastapi import FastAPI, File, UploadFile, Depends, HTTPException, Query, Fo
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm, HTTPBearer, HTTPAuthorizationCredentials
-from sqlalchemy import create_engine, Column, Integer, String, Boolean, ForeignKey, Text, Enum as SQLEnum, DateTime, text, Index, or_, LargeBinary
+from sqlalchemy import create_engine, Column, Integer, String, Boolean, ForeignKey, Text, Enum as SQLEnum, DateTime, text, Index, or_, LargeBinary, JSON
 from sqlalchemy.orm import declarative_base, Session, sessionmaker, relationship, joinedload
 from pydantic import BaseModel, EmailStr, ConfigDict, field_validator
 from typing import Optional, List
@@ -192,6 +192,7 @@ class User(Base):
     verified_by = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     verified_at = Column(DateTime, nullable=True)
     email_verified = Column(Boolean, default=False)
+    admin_feedback = Column(JSON, nullable=True)  # JSON field for admin feedback/rejection messages
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     
     papers = relationship("Paper", foreign_keys="Paper.uploaded_by", back_populates="uploader")
@@ -229,7 +230,8 @@ class Paper(Base):
     status = Column(SQLEnum(SubmissionStatus), default=SubmissionStatus.PENDING, index=True)
     reviewed_by = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"))
     reviewed_at = Column(DateTime)
-    rejection_reason = Column(Text)
+    rejection_reason = Column(Text)  # Kept for backward compatibility
+    admin_feedback = Column(JSON, nullable=True)  # JSON field for admin feedback/rejection messages
     
     uploaded_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
     updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
@@ -335,6 +337,7 @@ def find_file_in_uploads(stored_path: str) -> Optional[Path]:
     return None
 
 class UserResponse(BaseModel):
+    admin_feedback: Optional[dict] = None  # JSON field for admin feedback/rejection messages
     model_config = ConfigDict(from_attributes=True)
     
     id: int
@@ -416,10 +419,12 @@ class PaperResponse(BaseModel):
     uploaded_at: datetime
     reviewed_at: Optional[datetime]
     rejection_reason: Optional[str]
+    admin_feedback: Optional[dict] = None
 
 class PaperReview(BaseModel):
     status: SubmissionStatus
-    rejection_reason: Optional[str] = None
+    rejection_reason: Optional[str] = None  # Kept for backward compatibility
+    admin_feedback: Optional[dict] = None  # JSON field for admin feedback/rejection messages
 
 class PaperUpdate(BaseModel):
     title: Optional[str] = None
@@ -1490,6 +1495,7 @@ def list_verification_requests(db: Session = Depends(get_db), admin: User = Depe
 class VerifyAction(BaseModel):
     approve: bool
     reason: Optional[str] = None
+    admin_feedback: Optional[dict] = None  # JSON field for admin feedback/rejection messages
 
 
 @app.post("/admin/verify-user/{user_id}", response_model=UserResponse)
@@ -1497,9 +1503,26 @@ def verify_user(user_id: int, action: VerifyAction, db: Session = Depends(get_db
     user = db.query(User).filter(User.id == user_id).first()
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
+    
     user.id_verified = bool(action.approve)
     user.verified_by = admin.id if action.approve else None
     user.verified_at = datetime.now(timezone.utc) if action.approve else None
+    
+    # Store admin feedback in JSON format when rejecting
+    if not action.approve:
+        if action.admin_feedback:
+            user.admin_feedback = action.admin_feedback
+        elif action.reason:
+            # Convert old reason to new JSON format for consistency
+            user.admin_feedback = {
+                "message": action.reason,
+                "rejected_at": datetime.now(timezone.utc).isoformat(),
+                "rejected_by": admin.id
+            }
+    else:
+        # Clear admin feedback if approved
+        user.admin_feedback = None
+    
     db.commit()
     db.refresh(user)
     return user
@@ -1837,13 +1860,28 @@ def review_paper(
     if not paper:
         raise HTTPException(status_code=404, detail="Paper not found")
     
-    if review.status == SubmissionStatus.REJECTED and not review.rejection_reason:
-        raise HTTPException(status_code=400, detail="Rejection reason required")
+    if review.status == SubmissionStatus.REJECTED and not review.rejection_reason and not review.admin_feedback:
+        raise HTTPException(status_code=400, detail="Rejection reason or admin feedback required")
     
     paper.status = review.status
     paper.reviewed_by = admin.id
     paper.reviewed_at = datetime.now(timezone.utc)
-    paper.rejection_reason = review.rejection_reason
+    paper.rejection_reason = review.rejection_reason  # Keep for backward compatibility
+    
+    # Store admin feedback in JSON format
+    if review.status == SubmissionStatus.REJECTED:
+        if review.admin_feedback:
+            paper.admin_feedback = review.admin_feedback
+        elif review.rejection_reason:
+            # Convert old rejection_reason to new JSON format for consistency
+            paper.admin_feedback = {
+                "message": review.rejection_reason,
+                "rejected_at": datetime.now(timezone.utc).isoformat(),
+                "rejected_by": admin.id
+            }
+    else:
+        # Clear admin feedback if approved
+        paper.admin_feedback = None
     
     db.commit()
     
@@ -2123,7 +2161,8 @@ def format_paper_response(paper: Paper, include_private_info: bool = False):
         "status": paper.status,
         "uploaded_at": paper.uploaded_at,
         "reviewed_at": paper.reviewed_at,
-        "rejection_reason": paper.rejection_reason if include_private_info else None
+        "rejection_reason": paper.rejection_reason if include_private_info else None,
+        "admin_feedback": paper.admin_feedback if (include_private_info or paper.status == SubmissionStatus.REJECTED) else None
     }
     return PaperResponse(**paper_dict)
 
