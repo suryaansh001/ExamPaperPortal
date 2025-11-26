@@ -1957,6 +1957,35 @@ def review_paper(
     
     return {"message": f"Paper {review.status.value} successfully"}
 
+@app.post("/admin/papers/approve-all")
+def approve_all_pending_papers(
+    db: Session = Depends(get_db),
+    admin: User = Depends(require_admin)
+):
+    """Admin: Approve all pending papers at once"""
+    pending_papers = db.query(Paper).filter(Paper.status == SubmissionStatus.PENDING).all()
+    
+    if not pending_papers:
+        return {
+            "message": "No pending papers to approve",
+            "approved_count": 0
+        }
+    
+    approved_count = 0
+    for paper in pending_papers:
+        paper.status = SubmissionStatus.APPROVED
+        paper.reviewed_by = admin.id
+        paper.reviewed_at = datetime.now(timezone.utc)
+        paper.admin_feedback = None  # Clear any previous feedback
+        approved_count += 1
+    
+    db.commit()
+    
+    return {
+        "message": f"Successfully approved {approved_count} paper(s)",
+        "approved_count": approved_count
+    }
+
 @app.put("/papers/{paper_id}/edit")
 def edit_paper(
     paper_id: int,
