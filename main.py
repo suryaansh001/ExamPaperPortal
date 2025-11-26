@@ -257,6 +257,8 @@ class Paper(Base):
     paper_type = Column(SQLEnum(PaperType), nullable=False, index=True)
     year = Column(Integer, index=True)
     semester = Column(String(20), index=True)
+    # New optional department/program field (e.g., BTECH, BBA, CCCT)
+    department = Column(String(255), nullable=True, index=True)
     
     file_path = Column(String(500), nullable=True)  # Kept for backward compatibility, now nullable
     file_name = Column(String(255), nullable=False)
@@ -296,6 +298,16 @@ JSON_COLUMN_SQL = {
 
 ensure_column_exists(engine, "users", "admin_feedback", JSON_COLUMN_SQL)
 ensure_column_exists(engine, "papers", "admin_feedback", JSON_COLUMN_SQL)
+
+# Ensure new department column exists on papers table
+DEPARTMENT_COLUMN_SQL = {
+    "postgresql": "VARCHAR(255)",
+    "sqlite": "TEXT",
+    "mysql": "VARCHAR(255)",
+    "mssql": "NVARCHAR(255)",
+    "default": "VARCHAR(255)",
+}
+ensure_column_exists(engine, "papers", "department", DEPARTMENT_COLUMN_SQL)
 
 # ========== Pydantic Schemas ==========
 class Token(BaseModel):
@@ -459,6 +471,7 @@ class PaperResponse(BaseModel):
     paper_type: PaperType
     year: Optional[int]
     semester: Optional[str]
+    department: Optional[str] = None
     file_name: str
     file_path: str
     file_size: Optional[int]
@@ -480,6 +493,7 @@ class PaperUpdate(BaseModel):
     course_id: Optional[int] = None
     year: Optional[int] = None
     semester: Optional[str] = None
+    department: Optional[str] = None
 
 class DashboardStats(BaseModel):
     total_papers: int
@@ -1720,6 +1734,7 @@ async def upload_paper(
     description: Optional[str] = Form(None),
     year: Optional[int] = Form(None),
     semester: Optional[str] = Form(None),
+    department: Optional[str] = Form(None),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
@@ -1783,6 +1798,7 @@ async def upload_paper(
         paper_type=paper_type,
         year=year,
         semester=semester,
+        department=department,
         file_path=stored_file_path,  # Keep for reference/backward compatibility
         file_name=file.filename,
         file_size=file_size,
@@ -1802,6 +1818,7 @@ def get_papers(
     paper_type: Optional[PaperType] = None,
     year: Optional[int] = None,
     semester: Optional[str] = None,
+    department: Optional[str] = None,
     status: Optional[SubmissionStatus] = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
@@ -1832,6 +1849,8 @@ def get_papers(
         query = query.filter(Paper.year == year)
     if semester:
         query = query.filter(Paper.semester == semester)
+    if department:
+        query = query.filter(Paper.department == department)
     
     # Optimize: Use eager loading to avoid N+1 queries
     papers = query.options(
@@ -1857,6 +1876,7 @@ def get_public_papers(
     paper_type: Optional[PaperType] = None,
     year: Optional[int] = None,
     semester: Optional[str] = None,
+    department: Optional[str] = None,
     db: Session = Depends(get_db)
 ):
     """Get all approved papers (public access, no authentication required)"""
@@ -1871,6 +1891,8 @@ def get_public_papers(
         query = query.filter(Paper.year == year)
     if semester:
         query = query.filter(Paper.semester == semester)
+    if department:
+        query = query.filter(Paper.department == department)
     
     # Optimize: Use eager loading to avoid N+1 queries
     papers = query.options(
@@ -1942,6 +1964,7 @@ def edit_paper(
     paper_type: Optional[str] = Form(None),
     year: Optional[str] = Form(None),
     semester: Optional[str] = Form(None),
+    department: Optional[str] = Form(None),
     db: Session = Depends(get_db),
     admin: User = Depends(require_admin)
 ):
@@ -1981,6 +2004,9 @@ def edit_paper(
     # Update semester if provided
     if semester:
         paper.semester = semester
+    # Update department if provided
+    if department is not None:
+        paper.department = department
     
     paper.updated_at = datetime.now(timezone.utc)
     db.commit()
@@ -2209,6 +2235,7 @@ def format_paper_response(paper: Paper, include_private_info: bool = False):
         "paper_type": paper.paper_type,
         "year": paper.year,
         "semester": paper.semester,
+        "department": paper.department,
         "file_name": paper.file_name or "",  # Ensure file_name is never None
         "file_size": paper.file_size,
         "file_path": file_path,  # Normalized to just filename, never None
