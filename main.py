@@ -2306,7 +2306,7 @@ def root():
 
 if __name__ == "__main__":
     import uvicorn
-    # Render requires binding to 0.0.0.0 and using PORT environment variable
-    # Default to 10000 to match Render's typical port
-    port = int(os.getenv("PORT", "10000"))
+    # Railway requires binding to 0.0.0.0 and using PORT environment variable
+    # Default to 8000 if PORT is not set
+    port = int(os.getenv("PORT", "8000"))
     uvicorn.run(app, host="0.0.0.0", port=port)
