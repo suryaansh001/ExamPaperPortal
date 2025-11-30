@@ -19,7 +19,13 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 
 # Install Node dependencies for bundled email-service (faster startup)
-RUN if [ -f "email-service/package.json" ]; then npm --prefix email-service ci; fi
+RUN if [ -f "email-service/package.json" ]; then \
+        if [ -f "email-service/package-lock.json" ]; then \
+            npm --prefix email-service ci; \
+        else \
+            npm --prefix email-service install; \
+        fi \
+    fi
 
 # Create uploads directory
 RUN mkdir -p uploads
