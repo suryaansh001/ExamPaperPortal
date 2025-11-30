@@ -79,8 +79,8 @@ elif SMTP_CONFIGURED:
     print("   Note: Some cloud platforms may block SMTP connections")
 print("\n")
 
-# Database setup with Neon DB support
-# Neon requires SSL/TLS connections
+# Database setup with Neon DB and Railway PostgreSQL support
+# Neon requires SSL/TLS connections, Railway PostgreSQL does not
 if "neon.tech" in DATABASE_URL or "neondb" in DATABASE_URL:
     # Neon DB connection with SSL
     engine = create_engine(
@@ -94,6 +94,20 @@ if "neon.tech" in DATABASE_URL or "neondb" in DATABASE_URL:
         pool_size=5,
         max_overflow=10,
     )
+    db_type = "Neon DB (SSL/TLS enabled)"
+elif "railway.app" in DATABASE_URL or "rlwy.net" in DATABASE_URL:
+    # Railway PostgreSQL connection (no SSL required)
+    engine = create_engine(
+        DATABASE_URL,
+        pool_pre_ping=True,
+        pool_recycle=300,
+        connect_args={
+            "connect_timeout": 10,
+        },
+        pool_size=5,
+        max_overflow=10,
+    )
+    db_type = "Railway PostgreSQL"
 else:
     # Local PostgreSQL or other providers
     engine = create_engine(
@@ -104,6 +118,7 @@ else:
             "connect_timeout": 10,
         }
     )
+    db_type = "PostgreSQL"
 
 # Validate DB connectivity; fall back to SQLite for local development if PostgreSQL is unavailable
 try:
@@ -956,7 +971,7 @@ async def lifespan(app: FastAPI):
     print("\n" + "="*70)
     print("🚀 Paper Portal API Starting...")
     print("="*70)
-    print(f"✓ Database: {'Neon DB (SSL/TLS enabled)' if 'neon.tech' in DATABASE_URL else 'PostgreSQL'}")
+    print(f"✓ Database: {db_type}")
     print(f"✓ Email: {'✓ Configured' if EMAIL_CONFIGURED else '❌ NOT CONFIGURED (Console output only)'}")
     if not EMAIL_CONFIGURED:
         print(f"  └─ Set RESEND_API_KEY or SMTP credentials in .env to enable email sending")
