@@ -1,4 +1,4 @@
-# Paper Portal - Complete Setup Guide
+# Exam Paper Portal - Complete Setup Guide
 
 A full-stack paper submission and management system with admin authentication, approval workflows, and course management.
 
