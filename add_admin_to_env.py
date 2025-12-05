@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Helper script to add admin credentials to .env file (lines 1-12 area)
+Helper script to add admin credenls to .env file (lines 1-12 area)
 """
 
 import os
