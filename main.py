@@ -27,14 +27,7 @@ from email.mime.multipart import MIMEMultipart
 import asyncio
 from functools import lru_cache
 from time import time
-
-# Try to import Resend (recommended for production email sending)
-try:
-    import resend
-    RESEND_AVAILABLE = True
-except ImportError:
-    RESEND_AVAILABLE = False
-
+import uuid
 
 # Load environment variables
 load_dotenv()
@@ -45,37 +38,29 @@ SECRET_KEY = os.getenv("SECRET_KEY", "your-secret-key-change-this-in-production"
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24  # 24 hours
 
-# Email Configuration - Support Resend (primary) and SMTP (fallback)
-EMAIL_SERVICE_URL = os.getenv("EMAIL_SERVICE_URL", "").strip()  # Optional external mailer (deprecated - use Resend or SMTP directly)
-RESEND_API_KEY = os.getenv("RESEND_API_KEY", "re_W7dx377D_4VR7e4gGzoAgs8uFUhCpcPGj").strip()
-RESEND_FROM_EMAIL = os.getenv("RESEND_FROM_EMAIL", "onboarding@resend.dev").strip()
+# Public base URL for generating shareable links
+PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "http://localhost:8000").rstrip('/')
 
-# Generic SMTP Configuration (works with Gmail, SendGrid, Mailgun, Outlook, etc.)
+# Email Configuration - SMTP only
+EMAIL_SERVICE_URL = os.getenv("EMAIL_SERVICE_URL", "").strip()  # Optional external mailer
 SMTP_SERVER = os.getenv("SMTP_SERVER", "smtp.gmail.com")
 SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
-SMTP_USER = os.getenv("SMTP_USER", os.getenv("GMAIL_USER", "")).strip()  # Support both SMTP_USER and GMAIL_USER
-SMTP_PASS = os.getenv("SMTP_PASS", os.getenv("GMAIL_PASS", "")).strip()  # Support both SMTP_PASS and GMAIL_PASS
-SMTP_FROM_EMAIL = os.getenv("SMTP_FROM_EMAIL", SMTP_USER).strip()  # From email address
+SMTP_USER = os.getenv("SMTP_USER", os.getenv("GMAIL_USER", "")).strip()
+SMTP_PASS = os.getenv("SMTP_PASS", os.getenv("GMAIL_PASS", "")).strip()
+SMTP_FROM_EMAIL = os.getenv("SMTP_FROM_EMAIL", SMTP_USER).strip()
 
 # Validate email configuration on startup
-RESEND_CONFIGURED = bool(RESEND_API_KEY and RESEND_AVAILABLE)
 SMTP_CONFIGURED = bool(SMTP_USER and SMTP_PASS and SMTP_SERVER and not SMTP_USER.startswith("your-") and not SMTP_PASS.startswith("your-"))
-EMAIL_CONFIGURED = bool(EMAIL_SERVICE_URL) or RESEND_CONFIGURED or SMTP_CONFIGURED
+EMAIL_CONFIGURED = bool(EMAIL_SERVICE_URL) or SMTP_CONFIGURED
 
 if not EMAIL_CONFIGURED:
     print("\n⚠️  WARNING: Email not configured!")
-    print("   Option 1 (Recommended): Set RESEND_API_KEY and RESEND_FROM_EMAIL")
-    print("   Option 2: Set SMTP_SERVER, SMTP_PORT, SMTP_USER, SMTP_PASS")
+    print("   Set SMTP_SERVER, SMTP_PORT, SMTP_USER, SMTP_PASS")
     print("   OTP emails will be printed to console only for now")
     print("\n")
 elif EMAIL_SERVICE_URL:
     print("\n✓ External Email Service configured")
     print(f"   Service URL: {EMAIL_SERVICE_URL}")
-elif RESEND_CONFIGURED:
-    print("\n✓ Resend email service configured")
-    print(f"   API Key: {'*' * 10}{RESEND_API_KEY[-4:] if len(RESEND_API_KEY) > 4 else '****'}")
-    print(f"   From Email: {RESEND_FROM_EMAIL}")
-    resend.api_key = RESEND_API_KEY
 elif SMTP_CONFIGURED:
     print(f"\n✓ SMTP email service configured: {SMTP_SERVER}:{SMTP_PORT}")
     print(f"   From: {SMTP_FROM_EMAIL}")
@@ -315,6 +300,9 @@ class Paper(Base):
     file_size = Column(Integer)
     file_data = Column(LargeBinary, nullable=True)  # Store file content in database
     
+    # Public sharing link - unique identifier for public access
+    public_link_id = Column(String(100), unique=True, nullable=True, index=True)
+    
     status = Column(SQLEnum(SubmissionStatus), default=SubmissionStatus.PENDING, index=True)
     reviewed_by = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"))
     reviewed_at = Column(DateTime)
@@ -358,6 +346,16 @@ DEPARTMENT_COLUMN_SQL = {
     "default": "VARCHAR(255)",
 }
 ensure_column_exists(engine, "papers", "department", DEPARTMENT_COLUMN_SQL)
+
+# Ensure public_link_id column exists on papers table
+PUBLIC_LINK_ID_COLUMN_SQL = {
+    "postgresql": "VARCHAR(100)",
+    "sqlite": "TEXT",
+    "mysql": "VARCHAR(100)",
+    "mssql": "NVARCHAR(100)",
+    "default": "VARCHAR(100)",
+}
+ensure_column_exists(engine, "papers", "public_link_id", PUBLIC_LINK_ID_COLUMN_SQL)
 
 # ========== Pydantic Schemas ==========
 class Token(BaseModel):
@@ -530,6 +528,8 @@ class PaperResponse(BaseModel):
     reviewed_at: Optional[datetime]
     rejection_reason: Optional[str]
     admin_feedback: Optional[dict] = None
+    public_link_id: Optional[str] = None
+    public_url: Optional[str] = None
 
 class PaperReview(BaseModel):
     status: SubmissionStatus
@@ -577,356 +577,38 @@ def generate_otp():
 
 def send_otp_email(email: str, otp: str):
     """
-    Send OTP to email using Resend (primary) or SMTP (fallback).
-    Supports both testing (console output) and production (actual email sending).
+    Display OTP in console (email sending disabled).
+    For production, configure email service separately.
     """
+    print(f"\n{'='*60}")
+    print(f"OTP for {email}: {otp}")
+    print(f"Expires in: 10 minutes")
+    print(f"{'='*60}\n")
+    return True
+
+def get_db():
+    db = SessionLocal()
     try:
-        # Always print to console for testing/debugging
-        print(f"\n{'='*60}")
-        print(f"OTP for {email}: {otp}")
-        print(f"Expires in: 10 minutes")
-        print(f"{'='*60}\n")
-        
-        # If email is not configured, just use console output
-        if not EMAIL_CONFIGURED:
-            print(f"ℹ️  Email credentials not configured. OTP shown above.")
-            print(f"    Configure RESEND_API_KEY or SMTP_SERVER, SMTP_PORT, SMTP_USER, SMTP_PASS in .env\n")
-            return True
-        
-        # Email HTML template
-        html_body = f"""
-            <!DOCTYPE html>
-            <html lang="en">
-            <head>
-                <meta charset="UTF-8">
-                <meta name="viewport" content="width=device-width, initial-scale=1.0">
-                <title>Paper Portal - Email Verification</title>
-                <style>
-                    body {{
-                        margin: 0;
-                        padding: 0;
-                        font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-                        background-color: #000000;
-                        color: #ffffff;
-                        line-height: 1.6;
-                    }}
-                    .container {{
-                        max-width: 600px;
-                        margin: 0 auto;
-                        padding: 20px;
-                        background-color: #000000;
-                    }}
-                    .header {{
-                        text-align: center;
-                        padding: 40px 20px;
-                        background: linear-gradient(135deg, #1a1a1a 0%, #2d2d2d 100%);
-                        border-radius: 15px;
-                        margin-bottom: 30px;
-                        border: 2px solid #333333;
-                    }}
-                    .logo {{
-                        font-size: 28px;
-                        font-weight: bold;
-                        color: #ffffff;
-                        margin-bottom: 10px;
-                        text-shadow: 0 2px 4px rgba(0,0,0,0.5);
-                    }}
-                    .subtitle {{
-                        font-size: 16px;
-                        color: #cccccc;
-                        margin-bottom: 0;
-                    }}
-                    .content {{
-                        background-color: #1a1a1a;
-                        padding: 40px;
-                        border-radius: 15px;
-                        border: 1px solid #333333;
-                        margin-bottom: 30px;
-                    }}
-                    .greeting {{
-                        font-size: 20px;
-                        font-weight: 600;
-                        color: #ffffff;
-                        margin-bottom: 20px;
-                    }}
-                    .otp-container {{
-                        text-align: center;
-                        margin: 40px 0;
-                        padding: 30px;
-                        background: linear-gradient(135deg, #2d2d2d 0%, #1a1a1a 100%);
-                        border-radius: 12px;
-                        border: 2px solid #4a4a4a;
-                    }}
-                    .otp-label {{
-                        font-size: 16px;
-                        color: #cccccc;
-                        margin-bottom: 15px;
-                        display: block;
-                    }}
-                    .otp-code {{
-                        font-family: 'Courier New', monospace;
-                        font-size: 36px;
-                        font-weight: bold;
-                        color: #00d4ff;
-                        letter-spacing: 8px;
-                        background-color: #000000;
-                        padding: 20px 40px;
-                        border-radius: 8px;
-                        border: 2px solid #00d4ff;
-                        display: inline-block;
-                        text-shadow: 0 0 10px rgba(0, 212, 255, 0.5);
-                        box-shadow: 0 0 20px rgba(0, 212, 255, 0.2);
-                    }}
-                    .warning {{
-                        background-color: #2d1b1b;
-                        border: 1px solid #ff6b6b;
-                        border-radius: 8px;
-                        padding: 20px;
-                        margin: 30px 0;
-                        text-align: center;
-                    }}
-                    .warning-icon {{
-                        color: #ff6b6b;
-                        font-size: 24px;
-                        margin-bottom: 10px;
-                    }}
-                    .warning-text {{
-                        color: #ff6b6b;
-                        font-weight: 600;
-                        margin-bottom: 5px;
-                    }}
-                    .warning-subtext {{
-                        color: #cccccc;
-                        font-size: 14px;
-                    }}
-                    .footer {{
-                        text-align: center;
-                        padding: 30px 20px;
-                        background-color: #0a0a0a;
-                        border-radius: 10px;
-                        border-top: 1px solid #333333;
-                    }}
-                    .footer-text {{
-                        color: #888888;
-                        font-size: 12px;
-                        margin: 0;
-                    }}
-                    .security-note {{
-                        background-color: #1a1a2e;
-                        border: 1px solid #16213e;
-                        border-radius: 8px;
-                        padding: 15px;
-                        margin-top: 20px;
-                    }}
-                    .security-text {{
-                        color: #a0a0a0;
-                        font-size: 11px;
-                        margin: 0;
-                        font-style: italic;
-                    }}
-                </style>
-            </head>
-            <body>
-                <div class="container">
-                    <div class="header">
-                        <div class="logo">📚 Paper Portal</div>
-                        <p class="subtitle">Academic Paper Management System</p>
-                    </div>
+        yield db
+    finally:
+        db.close()
 
-                    <div class="content">
-                        <h1 class="greeting">Email Verification Required</h1>
-                        <p style="color: #cccccc; margin-bottom: 30px;">
-                            Welcome to Paper Portal! To complete your registration and access academic papers, please verify your email address using the code below.
-                        </p>
-
-                        <div class="otp-container">
-                            <span class="otp-label">Your Verification Code</span>
-                            <div class="otp-code">{otp}</div>
-                        </div>
-
-                        <div class="warning">
-                            <div class="warning-icon">⏰</div>
-                            <div class="warning-text">Code Expires in 10 Minutes</div>
-                            <div class="warning-subtext">Please use this code immediately to complete your verification</div>
-                        </div>
-
-                        <p style="color: #cccccc; text-align: center;">
-                            If you didn't request this verification code, please ignore this email.
-                        </p>
-                    </div>
-
-                    <div class="footer">
-                        <div class="security-note">
-                            <p class="security-text">
-                                🔒 This is an automated message from Paper Portal. For security reasons, never share your verification code with anyone.
-                            </p>
-                        </div>
-                        <p class="footer-text" style="margin-top: 20px;">
-                            © 2025 Paper Portal - Secure Academic Document Management
-                        </p>
-                    </div>
-                </div>
-            </body>
-            </html>
-            """
-        text_body = f"""Paper Portal - Verification Code
-
-Your verification code is: {otp}
-
-This code expires in 10 minutes. If you didn't request this code, you can ignore this email.
-"""
-        
-        # 0) Preferred: External Nodemailer service (if configured)
-        if EMAIL_SERVICE_URL:
-            try:
-                # Use SMTP_FROM_EMAIL if available, otherwise RESEND_FROM_EMAIL
-                from_email = SMTP_FROM_EMAIL if SMTP_FROM_EMAIL else RESEND_FROM_EMAIL
-                payload = {
-                    "to": email,
-                    "from": from_email,
-                    "subject": "Your Paper Portal Verification Code",
-                    "html": html_body,
-                    "text": text_body
-                }
-                print(f"📧 Attempting to send via External Email Service: {EMAIL_SERVICE_URL}")
-                with httpx.Client(timeout=10) as client:
-                    r = client.post(f"{EMAIL_SERVICE_URL.rstrip('/')}/send-email", json=payload)
-                    if r.status_code >= 200 and r.status_code < 300:
-                        print(f"✓ Email sent successfully via External Mailer to {email}")
-                        return True
-                    else:
-                        print(f"❌ External Mailer error: {r.status_code} - {r.text[:200]}")
-                        print(f"   Falling back to Resend/SMTP...\n")
-            except httpx.TimeoutException:
-                print(f"❌ External Mailer timeout: Service at {EMAIL_SERVICE_URL} did not respond")
-                print(f"   Check if email service is running and accessible")
-                print(f"   Falling back to Resend/SMTP...\n")
-            except httpx.ConnectError:
-                print(f"❌ External Mailer connection failed: Cannot reach {EMAIL_SERVICE_URL}")
-                print(f"   Check if email service is running and EMAIL_SERVICE_URL is correct")
-                print(f"   Falling back to Resend/SMTP...\n")
-            except Exception as e:
-                print(f"❌ External Mailer request failed: {type(e).__name__}: {e}")
-                print(f"   Falling back to Resend/SMTP...\n")
-        else:
-            print(f"ℹ️  EMAIL_SERVICE_URL not configured. Skipping external email service.")
-            print(f"   Using Resend or SMTP directly for email sending.\n")
-
-        # 1) Try Resend API
-        if RESEND_CONFIGURED:
-            try:
-                # Send email via Resend API
-                from_header = RESEND_FROM_EMAIL if "<" in RESEND_FROM_EMAIL else f"Paper Portal <{RESEND_FROM_EMAIL}>"
-                email_response = resend.Emails.send({
-                    "from": from_header,
-                    "to": [email],
-                    "subject": "Your Paper Portal Verification Code",
-                    "html": html_body,
-                    "text": text_body
-                })
-                
-                # Check if response is valid (Resend returns dict with 'id' or 'error')
-                if email_response and isinstance(email_response, dict):
-                    if 'id' in email_response:
-                        print(f"✓ Email sent successfully via Resend to {email} (ID: {email_response.get('id', 'N/A')})")
-                        return True
-                    elif 'error' in email_response:
-                        error_msg = email_response.get('error', {}).get('message', 'Unknown error')
-                        print(f"❌ Resend API error: {error_msg}")
-                        print(f"   Falling back to SMTP...\n")
-                    else:
-                        # Response received but format unexpected
-                        print(f"✓ Email sent via Resend to {email}")
-                        return True
-                else:
-                    # Response is None or unexpected format - assume success
-                    print(f"✓ Email sent via Resend to {email}")
-                    return True
-                    
-            except Exception as e:
-                error_msg = str(e)
-                print(f"❌ Resend error: {type(e).__name__}: {error_msg}")
-                
-                # Check for specific error types and provide helpful messages
-                if "403" in error_msg or "Forbidden" in error_msg:
-                    print(f"   Reason: API key may not have permission or is invalid")
-                    print(f"   Check: https://resend.com/api-keys")
-                    print(f"   Note: onboarding@resend.dev only works for your account email")
-                elif "422" in error_msg or "validation" in error_msg.lower():
-                    print(f"   Reason: Invalid request format or email address")
-                elif "domain" in error_msg.lower() or "not verified" in error_msg.lower():
-                    print(f"   Reason: Domain not verified. onboarding@resend.dev only works for your account email")
-                    print(f"   Solution: Use Resend SMTP (configure SMTP_SERVER=smtp.resend.com) or verify a domain")
-                
-                print(f"   Falling back to SMTP...\n")
-        
-        # 2) Fallback to SMTP (generic or Resend SMTP)
-        # Prefer configured SMTP first; else, if we have a RESEND_API_KEY, attempt Resend SMTP smart fallback
-        use_smart_resend_smtp = False
-        smtp_server = SMTP_SERVER
-        smtp_port = SMTP_PORT
-        smtp_user = SMTP_USER
-        smtp_pass = SMTP_PASS
-        if not SMTP_CONFIGURED and RESEND_API_KEY:
-            # Smart fallback to Resend SMTP
-            use_smart_resend_smtp = True
-            smtp_server = "smtp.resend.com"
-            smtp_port = 587
-            smtp_user = "resend"
-            smtp_pass = RESEND_API_KEY
-
-        if SMTP_CONFIGURED or use_smart_resend_smtp:
-            try:
-                message = MIMEMultipart()
-                # Preserve display name if provided, else use configured SMTP_FROM_EMAIL
-                from_header = RESEND_FROM_EMAIL if "<" in RESEND_FROM_EMAIL else (SMTP_FROM_EMAIL or RESEND_FROM_EMAIL)
-                message["From"] = from_header
-                message["To"] = email
-                message["Subject"] = "Your Paper Portal Verification Code"
-                message.attach(MIMEText(html_body, "html"))
-                # Add text alternative for better deliverability
-                message.attach(MIMEText(text_body, "plain"))
-                
-                # Send via SMTP with timeout
-                with smtplib.SMTP(smtp_server, smtp_port, timeout=10) as server:
-                    server.starttls()
-                    if smtp_user and smtp_pass:
-                        server.login(smtp_user, smtp_pass)
-                    server.send_message(message)
-                
-                print(f"✓ Email sent successfully via SMTP ({smtp_server}) to {email}")
-                return True
-                
-            except smtplib.SMTPAuthenticationError as e:
-                print(f"❌ SMTP authentication failed: {e}")
-                if use_smart_resend_smtp:
-                    print(f"   Attempted Resend SMTP with provided API key. Ensure your sender domain is verified in Resend.")
-                    print(f"   Verify domain: https://resend.com/domains")
-                else:
-                    print(f"   Reason: Check SMTP_USER and SMTP_PASS credentials")
-                    print(f"   Note: Use App Password (not regular password)")
-                    print(f"   Check: https://myaccount.google.com/apppasswords")
-                print()
-                return True
-                
-            except (smtplib.SMTPException, OSError) as e:
-                print(f"❌ SMTP error: {type(e).__name__}: {e}")
-                print(f"   Note: Some platforms may have SMTP network restrictions")
-                print(f"   Recommendation: Use Resend API or verify your domain for any-recipient sending")
-                print(f"   Get API key: https://resend.com\n")
-                return True
-            
-            except Exception as e:
-                print(f"❌ Unexpected error sending email: {type(e).__name__}: {e}\n")
-                return True
-        
-        # If we get here, no email service worked
-        print(f"⚠️  No email service available for sending\n")
-        return True
+async def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)):
+    credentials_exception = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Could not validate credentials",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        email: str = payload.get("sub")
+        if email is None:
+            raise credentials_exception
+        token_data = TokenData(email=email)
+    except JWTError:
+        raise credentials_exception
     
-    except Exception as e:
-        print(f"❌ Critical error in send_otp_email: {type(e).__name__}: {e}\n")
-        return True
+    user = db.que
 
 def get_db():
     db = SessionLocal()
@@ -1904,7 +1586,8 @@ async def upload_paper(
         file_name=file.filename,
         file_size=file_size,
         file_data=file_content,  # Store file content in database
-        status=SubmissionStatus.PENDING
+        status=SubmissionStatus.PENDING,
+        public_link_id=uuid.uuid4().hex[:16]  # Generate unique public link ID
     )
     
     db.add(paper)
@@ -2282,6 +1965,51 @@ async def download_paper(
     from fastapi.responses import FileResponse
     return FileResponse(str(file_path), filename=paper.file_name)
 
+@app.get("/public/papers/{public_link_id}")
+async def get_public_paper(
+    public_link_id: str,
+    db: Session = Depends(get_db)
+):
+    """
+    Publicly accessible PDF endpoint - no authentication required.
+    Returns PDF for inline viewing in browser and AI tools like ChatGPT.
+    Serves all papers (no approval/login restriction).
+    """
+    # Find paper by public_link_id (no status filter - all papers accessible)
+    paper = db.query(Paper).filter(
+        Paper.public_link_id == public_link_id
+    ).first()
+    
+    if not paper:
+        raise HTTPException(
+            status_code=404, 
+            detail="Paper not found"
+        )
+    
+    # Check if file exists in database
+    if not paper.file_data:
+        raise HTTPException(
+            status_code=404, 
+            detail="File data not available"
+        )
+    
+    # Serve PDF with inline display headers for browser viewing
+    from fastapi.responses import Response
+    mime_type = get_mime_type(paper.file_name)
+    
+    return Response(
+        content=paper.file_data,
+        media_type=mime_type,
+        headers={
+            "Content-Disposition": f'inline; filename="{paper.file_name}"',
+            "Content-Type": mime_type,
+            "Access-Control-Allow-Origin": "*",  # Allow cross-origin access for AI tools
+            "Access-Control-Allow-Methods": "GET, OPTIONS",
+            "Access-Control-Allow-Headers": "*",
+            "Cache-Control": "public, max-age=3600",  # Cache for 1 hour
+        }
+    )
+
 @app.get("/admin/diagnose/files")
 def diagnose_files(
     db: Session = Depends(get_db),
@@ -2370,6 +2098,11 @@ def format_paper_response(paper: Paper, include_private_info: bool = False):
         # If no file_path at all, use empty string
         file_path = ""
     
+    # Generate public URL for any paper with public_link_id (no approval restriction)
+    public_url = None
+    if paper.public_link_id:
+        public_url = f"{PUBLIC_BASE_URL}/public/papers/{paper.public_link_id}"
+    
     paper_dict = {
         "id": paper.id,
         "course_id": paper.course_id,
@@ -2390,7 +2123,9 @@ def format_paper_response(paper: Paper, include_private_info: bool = False):
         "uploaded_at": paper.uploaded_at,
         "reviewed_at": paper.reviewed_at,
         "rejection_reason": paper.rejection_reason if include_private_info else None,
-        "admin_feedback": paper.admin_feedback if (include_private_info or paper.status == SubmissionStatus.REJECTED) else None
+        "admin_feedback": paper.admin_feedback if (include_private_info or paper.status == SubmissionStatus.REJECTED) else None,
+        "public_link_id": paper.public_link_id,
+        "public_url": public_url
     }
     return PaperResponse(**paper_dict)
 
