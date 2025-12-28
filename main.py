@@ -609,30 +609,6 @@ async def get_current_user(token: str = Depends(oauth2_scheme), db: Session = De
     except JWTError:
         raise credentials_exception
     
-    user = db.que
-
-def get_db():
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
-
-async def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)):
-    credentials_exception = HTTPException(
-        status_code=status.HTTP_401_UNAUTHORIZED,
-        detail="Could not validate credentials",
-        headers={"WWW-Authenticate": "Bearer"},
-    )
-    try:
-        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-        email: str = payload.get("sub")
-        if email is None:
-            raise credentials_exception
-        token_data = TokenData(email=email)
-    except JWTError:
-        raise credentials_exception
-    
     user = db.query(User).filter(User.email == token_data.email).first()
     if user is None:
         raise credentials_exception
@@ -691,7 +667,7 @@ async def lifespan(app: FastAPI):
     print(f"✓ Database: {db_type}")
     print(f"✓ Email: {'✓ Configured' if EMAIL_CONFIGURED else '❌ NOT CONFIGURED (Console output only)'}")
     if not EMAIL_CONFIGURED:
-        print(f"  └─ Set RESEND_API_KEY or SMTP credentials in .env to enable email sending")
+        print(f"  └─ Set SMTP credentials (SMTP_SERVER, SMTP_PORT, SMTP_USER, SMTP_PASS) in .env to enable email sending")
     print("="*70 + "\n")
     
     # Start keep-alive task to prevent auto-shutdown
@@ -938,34 +914,6 @@ def email_health_check():
         "mode": "console_output_only"
     }
     
-    # Check Resend
-    if RESEND_CONFIGURED:
-        try:
-            # Validate Resend API key is set (basic check)
-            if not RESEND_API_KEY:
-                status_info["providers"]["resend"] = {
-                    "status": "misconfigured",
-                    "error": "RESEND_API_KEY is empty"
-                }
-            else:
-                # Basic validation - Resend API key should be non-empty
-                status_info["providers"]["resend"] = {
-                    "status": "configured",
-                    "from_email": RESEND_FROM_EMAIL,
-                    "note": "Ready to send emails via Resend API"
-                }
-                status_info["active_provider"] = "resend"
-        except Exception as e:
-            status_info["providers"]["resend"] = {
-                "status": "error",
-                "error": str(e)
-            }
-    else:
-        status_info["providers"]["resend"] = {
-            "status": "not_configured",
-            "error": "Set RESEND_API_KEY in environment"
-        }
-    
     # Check SMTP (generic - works with Gmail, SendGrid, Mailgun, etc.)
     if SMTP_CONFIGURED:
         try:
@@ -981,9 +929,7 @@ def email_health_check():
                 "smtp_port": SMTP_PORT
             }
             
-            # If Resend is not active, SMTP becomes primary
-            if not status_info["active_provider"]:
-                status_info["active_provider"] = "smtp"
+            status_info["active_provider"] = "smtp"
         
         except smtplib.SMTPAuthenticationError as e:
             status_info["providers"]["smtp"] = {
@@ -1015,7 +961,7 @@ def email_health_check():
     if status_info["active_provider"]:
         status_info["status"] = "healthy"
         status_info["message"] = f"Email service ready via {status_info['active_provider']}"
-    elif RESEND_AVAILABLE or SMTP_CONFIGURED:
+    elif SMTP_CONFIGURED:
         status_info["status"] = "degraded"
         status_info["message"] = "Email service available but not fully configured"
     else:
@@ -1609,16 +1555,20 @@ def get_papers(
     semester: Optional[str] = None,
     department: Optional[str] = None,
     status: Optional[SubmissionStatus] = None,
+    my_papers_only: Optional[bool] = Query(False, description="If true, return only papers uploaded by the current user"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
     """Get papers with filters"""
     query = db.query(Paper)
     
-    # Non-admins (logged-in students) can see:
-    # - All approved papers (from any user)
-    # - Their own papers (pending, approved, or rejected)
-    if not current_user.is_admin:
+    # If my_papers_only is requested, filter to only user's papers
+    if my_papers_only:
+        query = query.filter(Paper.uploaded_by == current_user.id)
+    elif not current_user.is_admin:
+        # Non-admins (logged-in students) can see:
+        # - All approved papers (from any user)
+        # - Their own papers (pending, approved, or rejected)
         query = query.filter(
             or_(
                 Paper.status == SubmissionStatus.APPROVED,  # All approved papers
