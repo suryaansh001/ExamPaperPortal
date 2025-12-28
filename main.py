@@ -514,6 +514,7 @@ class PaperResponse(BaseModel):
     course_id: int
     course_code: Optional[str]
     course_name: Optional[str]
+    uploaded_by: Optional[int]
     uploader_name: Optional[str]
     uploader_email: Optional[str]
     title: str
@@ -2375,6 +2376,7 @@ def format_paper_response(paper: Paper, include_private_info: bool = False):
         "course_id": paper.course_id,
         "course_code": paper.course.code if paper.course else None,
         "course_name": paper.course.name if paper.course else None,
+        "uploaded_by": paper.uploaded_by,
         "uploader_name": paper.uploader.name if paper.uploader else "Unknown",
         "uploader_email": paper.uploader.email if (paper.uploader and include_private_info) else None,
         "title": paper.title,
