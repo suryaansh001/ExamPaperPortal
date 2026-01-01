@@ -5,7 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm, HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.middleware.gzip import GZipMiddleware
-from sqlalchemy import create_engine, Column, Integer, String, Boolean, ForeignKey, Text, Enum as SQLEnum, DateTime, text, Index, or_, LargeBinary, JSON, inspect
+from sqlalchemy import create_engine, Column, Integer, String, Boolean, ForeignKey, Text, Enum as SQLEnum, DateTime, text, Index, or_, and_, LargeBinary, JSON, inspect
 from sqlalchemy.orm import declarative_base, Session, sessionmaker, relationship, joinedload
 from pydantic import BaseModel, EmailStr, ConfigDict, field_validator
 from typing import Optional, List
@@ -1566,13 +1566,12 @@ def get_papers(
     if my_papers_only:
         query = query.filter(Paper.uploaded_by == current_user.id)
     elif not current_user.is_admin:
-        # Non-admins (logged-in students) can see:
-        # - All approved papers (from any user)
-        # - Their own papers (pending, approved, or rejected)
+        # Non-admins (logged-in students) can only see:
+        # - Their own papers that were rejected by admin
         query = query.filter(
-            or_(
-                Paper.status == SubmissionStatus.APPROVED,  # All approved papers
-                Paper.uploaded_by == current_user.id  # Or their own papers (any status)
+            and_(
+                Paper.uploaded_by == current_user.id,
+                Paper.status == SubmissionStatus.REJECTED
             )
         )
     elif status:
