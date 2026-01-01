@@ -32,6 +32,8 @@ import uuid
 # Load environment variables
 load_dotenv()
 
+
+
 # Configuration
 DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://user:password@localhost/paper_portal")
 SECRET_KEY = os.getenv("SECRET_KEY", "your-secret-key-change-this-in-production")
