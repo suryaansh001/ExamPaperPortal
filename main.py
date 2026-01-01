@@ -1582,6 +1582,12 @@ def get_papers(
         # Admins can filter by status
         query = query.filter(Paper.status == status)
     
+
+
+
+
+
+    
     # Apply filters
     if course_id:
         query = query.filter(Paper.course_id == course_id)
