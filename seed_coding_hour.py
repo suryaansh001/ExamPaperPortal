@@ -1,4 +1,4 @@
-from main import SessionLocal, Course, DailyChallenge, Base, engine
+from main import SessionLocal, Course, DailyChallenge, Base, engine, User, get_password_hash
 from datetime import datetime
 
 def seed_data():
@@ -9,8 +9,8 @@ def seed_data():
 
     # 1. Ensure Courses Exist
     courses_data = [
-        {"code": "CODING_PYTHON", "name": "Coding Hour - python", "description": "Daily Python coding challenges"},
-        {"code": "CODING_DAA", "name": "Coding Hour DAA", "description": "Daily Design and Analysis of Algorithms challenges"},
+        {"code": "CODING_PYTHON", "name": "Coding Hour - python", "description": " Python coding challenges"},
+        {"code": "CODING_DAA", "name": "Coding Hour DAA", "description": " Design and Analysis of Algorithms challenges"},
     ]
 
     created_courses = {}
@@ -136,6 +136,34 @@ def seed_data():
             print(f"Added DAA challenge: {data['date']}")
         else:
             print(f"DAA challenge {data['date']} already exists")
+
+    
+    # 4. Create Coding Hour Admin Users
+    admin_users = [
+        {"email": "coding_ta1@jklu.edu.in", "name": "Coding TA 1", "password": "ta1_password", "role": "coding_ta"},
+        {"email": "coding_ta2@jklu.edu.in", "name": "Coding TA 2", "password": "ta2_password", "role": "coding_ta"},
+    ]
+    
+    for a_data in admin_users:
+        user = session.query(User).filter(User.email == a_data["email"]).first()
+        if not user:
+            user = User(
+                email=a_data["email"],
+                name=a_data["name"],
+                password_hash=get_password_hash(a_data["password"]),
+                is_admin=True,
+                admin_role=a_data["role"],
+                email_verified=True
+            )
+            session.add(user)
+            print(f"Created Admin User: {a_data['email']} / {a_data['password']}")
+        else:
+            # Ensure existing user has correct role
+            if user.admin_role != a_data["role"]:
+                user.admin_role = a_data["role"]
+                session.add(user)
+                print(f"Updated role for {a_data['email']}")
+            print(f"Admin User already exists: {a_data['email']}")
 
     session.commit()
     session.close()

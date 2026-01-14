@@ -250,6 +250,7 @@ class User(Base):
     name = Column(String, nullable=False)
     password_hash = Column(String, nullable=False)
     is_admin = Column(Boolean, default=False)
+    admin_role = Column(String(50), nullable=True)  # 'coding_ta' or None (Super Admin)
     # Profile fields 
     age = Column(Integer, nullable=True)
     year = Column(String(20), nullable=True)
@@ -374,6 +375,28 @@ PUBLIC_LINK_ID_COLUMN_SQL = {
 }
 ensure_column_exists(engine, "papers", "public_link_id", PUBLIC_LINK_ID_COLUMN_SQL)
 
+# Ensure admin_role column exists on users table
+ADMIN_ROLE_COLUMN_SQL = {
+    "postgresql": "VARCHAR(50)",
+    "sqlite": "TEXT",
+    "mysql": "VARCHAR(50)",
+    "mssql": "NVARCHAR(50)",
+    "default": "VARCHAR(50)",
+}
+ensure_column_exists(engine, "users", "admin_role", ADMIN_ROLE_COLUMN_SQL)
+
+# Ensure photo_data and id_card_data columns exist on users table (for large binary storage)
+LARGE_BINARY_COLUMN_SQL = {
+    "postgresql": "BYTEA",
+    "sqlite": "BLOB",
+    "mysql": "LONGBLOB",
+    "mssql": "VARBINARY(MAX)",
+    "default": "BLOB",
+}
+ensure_column_exists(engine, "users", "photo_data", LARGE_BINARY_COLUMN_SQL)
+ensure_column_exists(engine, "users", "id_card_data", LARGE_BINARY_COLUMN_SQL)
+
+
 # ========== Pydantic Schemas ==========
 class Token(BaseModel):
     access_token: str
@@ -468,6 +491,7 @@ class UserResponse(BaseModel):
     email: str
     name: str
     is_admin: bool
+    admin_role: Optional[str] = None
     email_verified: bool
     # extended profile fields
     age: Optional[int] = None
@@ -528,6 +552,14 @@ class DailyChallengeCreate(BaseModel):
     question: str
     code_snippet: str
     explanation: str
+    media_link: Optional[str] = None
+
+class DailyChallengeUpdate(BaseModel):
+    course_id: Optional[int] = None
+    date: Optional[str] = None
+    question: Optional[str] = None
+    code_snippet: Optional[str] = None
+    explanation: Optional[str] = None
     media_link: Optional[str] = None
 
 class DailyChallengeResponse(BaseModel):
@@ -654,6 +686,28 @@ async def get_current_user(token: str = Depends(oauth2_scheme), db: Session = De
 def require_admin(current_user: User = Depends(get_current_user)):
     if not current_user.is_admin:
         raise HTTPException(status_code=403, detail="Admin access required")
+    return current_user
+
+def require_coding_admin(current_user: User = Depends(get_current_user)):
+    """
+    Allow access if user is:
+    1. Super Admin (admin_role is None)
+    2. Coding Hour TA (admin_role == 'coding_ta')
+    """
+    if not current_user.is_admin:
+        raise HTTPException(status_code=403, detail="Admin access required")
+    
+    # If admin_role is set, it must be 'coding_ta' (or None for super admin)
+    # A 'coding_ta' can only access this, but a Super Admin (None) can access everything.
+    # So if they have an admin_role, ensure it includes rights.
+    # For now, if they are admin, they are either Super or specific.
+    # If they are a 'coding_ta', they pass.
+    # If they are super admin (admin_role is None), they pass.
+    # If they are some other future role, maybe block? 
+    # For now, explicit check:
+    if current_user.admin_role and current_user.admin_role != 'coding_ta':
+         raise HTTPException(status_code=403, detail="Coding Hour Admin access required")
+         
     return current_user
 
 async def get_current_user_optional(
@@ -1491,7 +1545,7 @@ def delete_course(course_id: int, db: Session = Depends(get_db), admin: User = D
 
 # ========== Coding Hour Endpoints ==========
 @app.post("/challenges", response_model=DailyChallengeResponse)
-def create_challenge(challenge: DailyChallengeCreate, db: Session = Depends(get_db), admin: User = Depends(require_admin)):
+def create_challenge(challenge: DailyChallengeCreate, db: Session = Depends(get_db), admin: User = Depends(require_coding_admin)):
     """Admin: Create a new daily challenge"""
     # Check if course exists
     course = db.query(Course).filter(Course.id == challenge.course_id).first()
@@ -1503,6 +1557,49 @@ def create_challenge(challenge: DailyChallengeCreate, db: Session = Depends(get_
     db.commit()
     db.refresh(db_challenge)
     return db_challenge
+
+@app.put("/challenges/{challenge_id}", response_model=DailyChallengeResponse)
+def update_challenge(
+    challenge_id: int, 
+    challenge_update: DailyChallengeUpdate, 
+    db: Session = Depends(get_db), 
+    admin: User = Depends(require_coding_admin)
+):
+    """Admin: Update a daily challenge"""
+    challenge = db.query(DailyChallenge).filter(DailyChallenge.id == challenge_id).first()
+    if not challenge:
+        raise HTTPException(status_code=404, detail="Challenge not found")
+    
+    update_data = challenge_update.dict(exclude_unset=True)
+    if not update_data:
+        return challenge
+
+    for field, value in update_data.items():
+        setattr(challenge, field, value)
+    
+    db.commit()
+    db.refresh(challenge)
+    return challenge
+
+@app.delete("/challenges/{challenge_id}")
+def delete_challenge(challenge_id: int, db: Session = Depends(get_db), admin: User = Depends(require_coding_admin)):
+    """Admin: Delete a daily challenge"""
+    challenge = db.query(DailyChallenge).filter(DailyChallenge.id == challenge_id).first()
+    if not challenge:
+        raise HTTPException(status_code=404, detail="Challenge not found")
+    
+    db.delete(challenge)
+    db.commit()
+    return {"message": "Challenge deleted successfully"}
+
+@app.get("/admin/daily-challenges", response_model=List[DailyChallengeResponse])
+def get_all_challenges_admin(
+    db: Session = Depends(get_db), 
+    admin: User = Depends(require_coding_admin)
+):
+    """Admin: Get all challenges for management"""
+    challenges = db.query(DailyChallenge).order_by(DailyChallenge.date.desc()).all()
+    return challenges
 
 @app.get("/challenges/course/{course_id}", response_model=List[DailyChallengeResponse])
 def get_course_challenges(course_id: int, db: Session = Depends(get_db)):
