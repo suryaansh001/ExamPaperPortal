@@ -128,6 +128,8 @@ except Exception as e:
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
+Base.__allow_unmapped__ = True
+
 
 
 def ensure_column_exists(
@@ -244,6 +246,7 @@ class SubmissionStatus(str, Enum):
 # ========== Database Models ==========
 class User(Base):
     __tablename__ = "users"
+
     
     id = Column(Integer, primary_key=True, index=True)
     email = Column(String, unique=True, nullable=False, index=True)
