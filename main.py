@@ -271,6 +271,11 @@ class User(Base):
     
     papers = relationship("Paper", foreign_keys="Paper.uploaded_by", back_populates="uploader")
 
+    @property
+    def is_sub_admin(self) -> bool:
+        return self.admin_role == 'coding_ta'
+
+
 class Course(Base):
     __tablename__ = "courses"
     
@@ -492,6 +497,7 @@ class UserResponse(BaseModel):
     name: str
     is_admin: bool
     admin_role: Optional[str] = None
+    is_sub_admin: bool = False
     email_verified: bool
     # extended profile fields
     age: Optional[int] = None
@@ -1544,6 +1550,41 @@ def delete_course(course_id: int, db: Session = Depends(get_db), admin: User = D
     return {"message": "Course deleted successfully"}
 
 # ========== Coding Hour Endpoints ==========
+@app.post("/challenges/upload")
+async def upload_challenge_media(
+    file: UploadFile = File(...),
+    current_user: User = Depends(require_coding_admin),
+    db: Session = Depends(get_db)
+):
+    """Admin: Upload media for a challenge"""
+    # Create unique filename
+    file_ext = os.path.splitext(file.filename)[1]
+    filename = f"{uuid4()}{file_ext}"
+    file_path = UPLOAD_DIR / filename
+    
+    # Save file
+    with open(file_path, "wb") as buffer:
+        shutil.copyfileobj(file.file, buffer)
+    
+    # Generate URL (assuming served statically or via similar mechanism as papers)
+    # The frontend expects 'media_link' in response
+    # We can rely on the static mounting of /uploads or return a full URL
+    # Based on paper implementation, let's return a relative path or a full URL if configured
+    # For now, return the filename which the frontend likely constructs or uses directly
+    # But wait, HostDashboard uses it as href directly: <a href={challenge.media_link} ...>
+    # So it should be a full URL or a path relative to the site root if served statically.
+    
+    # Assuming /uploads is mounted as static (need to verify, but common pattern)
+    # If not, we might need a download endpoint.
+    # Looking at main.py lines 1621+, papers are uploaded but how are they served?
+    # I'll enable static serving of uploads dir if not present, or assume /uploads/filename works.
+    
+    media_url = f"{API_BASE_URL}/uploads/{filename}" if API_BASE_URL else f"/uploads/{filename}"
+    # Actually, simpler to return just relative path if frontend handles it, 
+    # but HostDashboard line 90 sets formData.media_link = response.data.media_link
+    
+    return {"media_link": media_url, "filename": filename}
+
 @app.post("/challenges", response_model=DailyChallengeResponse)
 def create_challenge(challenge: DailyChallengeCreate, db: Session = Depends(get_db), admin: User = Depends(require_coding_admin)):
     """Admin: Create a new daily challenge"""

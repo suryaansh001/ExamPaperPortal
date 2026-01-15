@@ -7,6 +7,14 @@ def seed_data():
     # Create tables if they don't exist
     Base.metadata.create_all(bind=engine)
 
+    # 1. Sync Sequence (Fix for User ID collision on Postgres)
+    if engine.dialect.name == 'postgresql':
+        print("Syncing primary key sequence for users table...")
+        from sqlalchemy import text
+        with engine.connect() as conn:
+            conn.execute(text("SELECT setval(pg_get_serial_sequence('users', 'id'), coalesce(max(id),0) + 1, false) FROM users;"))
+            conn.commit()
+
     # 1. Ensure Courses Exist
     courses_data = [
         {"code": "CODING_PYTHON", "name": "Coding Hour - python", "description": " Python coding challenges"},
