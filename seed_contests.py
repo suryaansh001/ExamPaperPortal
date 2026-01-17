@@ -26,7 +26,7 @@ def seed_contests():
         
         # Ensure courses exist
         courses_data = [
-            {"code": "CODING_PYTHON", "name": "Coding Hour - python", "description": "Python coding challenges"},
+            {"code": "CODING_C", "name": "Coding Hour C", "description": "Weekly C coding challenges"},
             {"code": "CODING_DAA", "name": "Coding Hour DAA", "description": "Design and Analysis of Algorithms challenges"},
         ]
         
@@ -44,52 +44,48 @@ def seed_contests():
                 print(f"⏭️  Course already exists: {course.name}")
             created_courses[c_data["code"]] = course.id
         
-        # Create Python contests with multiple questions
-        python_contests = [
+        # Create C contests with multiple questions
+        c_contests = [
             {
-                "date": "Week 1 - Day 1",
-                "title": "Python Basics",
-                "description": "Introduction to Python fundamentals",
+                "date": "Week 1",
+                "title": "C Fundamentals",
+                "description": "Introduction to C programming basics",
                 "questions": [
                     {
                         "order": 1,
                         "title": "Check Prime Number",
-                        "question": "Write a function to check if a number is prime.\n\nInput: An integer n\nOutput: True if prime, False otherwise",
+                        "question": "Write a C function to check if a number is prime.\n\nInput: An integer n\nOutput: 1 (true) if prime, 0 (false) otherwise",
                         "code_snippets": {
-                            "python": "def is_prime(n):\n    if n <= 1:\n        return False\n    for i in range(2, int(n**0.5) + 1):\n        if n % i == 0:\n            return False\n    return True\n\n# Test\nprint(is_prime(17))  # True\nprint(is_prime(4))   # False",
-                            "c": "#include <stdio.h>\n#include <math.h>\n#include <stdbool.h>\n\nbool is_prime(int n) {\n    if (n <= 1) return false;\n    for (int i = 2; i <= sqrt(n); i++) {\n        if (n % i == 0) return false;\n    }\n    return true;\n}\n\nint main() {\n    printf(\"%d\\n\", is_prime(17));  // 1 (true)\n    printf(\"%d\\n\", is_prime(4));   // 0 (false)\n    return 0;\n}",
-                            "cpp": "#include <iostream>\n#include <cmath>\nusing namespace std;\n\nbool is_prime(int n) {\n    if (n <= 1) return false;\n    for (int i = 2; i <= sqrt(n); i++) {\n        if (n % i == 0) return false;\n    }\n    return true;\n}\n\nint main() {\n    cout << is_prime(17) << endl;  // 1 (true)\n    cout << is_prime(4) << endl;   // 0 (false)\n    return 0;\n}"
+                            "c": "#include <stdio.h>\n#include <math.h>\n#include <stdbool.h>\n\nbool is_prime(int n) {\n    if (n <= 1) return false;\n    for (int i = 2; i <= sqrt(n); i++) {\n        if (n % i == 0) return false;\n    }\n    return true;\n}\n\nint main() {\n    printf(\"%d\\n\", is_prime(17));  // 1 (true)\n    printf(\"%d\\n\", is_prime(4));   // 0 (false)\n    return 0;\n}"
                         },
-                        "explanation": "**Approach:**\n1. Numbers ≤ 1 are not prime\n2. Check divisibility from 2 to √n\n3. If any number divides n, it's not prime\n\n**Time Complexity:** O(√n)\n**Space Complexity:** O(1)",
+                        "explanation": "**Approach:**\n1. Numbers <= 1 are not prime\n2. Check divisibility from 2 to sqrt(n)\n3. If any number divides n, it's not prime\n\n**Time Complexity:** O(sqrt(n))\n**Space Complexity:** O(1)",
                         "media_link": None
                     },
                     {
                         "order": 2,
                         "title": "Reverse a String",
-                        "question": "Write a function to reverse a string.\n\nInput: A string s\nOutput: Reversed string",
+                        "question": "Write a C function to reverse a string in-place.\n\nInput: A string s\nOutput: Reversed string",
                         "code_snippets": {
-                            "python": "def reverse_string(s):\n    return s[::-1]\n\n# Alternative using loop\ndef reverse_string_loop(s):\n    result = \"\"\n    for char in s:\n        result = char + result\n    return result\n\n# Test\nprint(reverse_string(\"hello\"))  # \"olleh\"",
                             "c": "#include <stdio.h>\n#include <string.h>\n\nvoid reverse_string(char *s) {\n    int len = strlen(s);\n    for (int i = 0; i < len/2; i++) {\n        char temp = s[i];\n        s[i] = s[len-1-i];\n        s[len-1-i] = temp;\n    }\n}\n\nint main() {\n    char str[] = \"hello\";\n    reverse_string(str);\n    printf(\"%s\\n\", str);  // \"olleh\"\n    return 0;\n}"
                         },
-                        "explanation": "**Python Approach:**\n- Use slicing `[::-1]` for simplicity\n- Or build string in reverse order\n\n**C Approach:**\n- Swap characters from both ends\n- Move towards center\n\n**Time Complexity:** O(n)\n**Space Complexity:** O(1) for in-place",
+                        "explanation": "**Approach:**\n- Swap characters from both ends\n- Move towards center\n\n**Time Complexity:** O(n)\n**Space Complexity:** O(1) for in-place",
                         "media_link": None
                     }
                 ]
             },
             {
-                "date": "Week 1 - Day 2",
-                "title": "Recursion Basics",
-                "description": "Understanding recursive functions",
+                "date": "Week 2",
+                "title": "Pointers and Arrays",
+                "description": "Understanding pointers and memory",
                 "questions": [
                     {
                         "order": 1,
-                        "title": "Factorial using Recursion",
-                        "question": "Calculate factorial of a number using recursion.\n\nInput: Non-negative integer n\nOutput: n! (factorial of n)",
+                        "title": "Array Reversal using Pointers",
+                        "question": "Reverse an array using pointers.\n\nInput: Array of integers\nOutput: Reversed array",
                         "code_snippets": {
-                            "python": "def factorial(n):\n    # Base case\n    if n == 0 or n == 1:\n        return 1\n    # Recursive case\n    return n * factorial(n - 1)\n\n# Test\nprint(factorial(5))  # 120\nprint(factorial(0))  # 1",
-                            "cpp": "#include <iostream>\nusing namespace std;\n\nint factorial(int n) {\n    if (n == 0 || n == 1)\n        return 1;\n    return n * factorial(n - 1);\n}\n\nint main() {\n    cout << factorial(5) << endl;  // 120\n    cout << factorial(0) << endl;  // 1\n    return 0;\n}"
+                            "c": "#include <stdio.h>\n\nvoid reverse_array(int *arr, int size) {\n    int *start = arr;\n    int *end = arr + size - 1;\n    while (start < end) {\n        int temp = *start;\n        *start = *end;\n        *end = temp;\n        start++;\n        end--;\n    }\n}\n\nint main() {\n    int arr[] = {1, 2, 3, 4, 5};\n    int n = 5;\n    reverse_array(arr, n);\n    for(int i=0; i<n; i++) printf(\"%d \", arr[i]);\n    return 0;\n}"
                         },
-                        "explanation": "**Recursion Structure:**\n1. **Base case:** n = 0 or 1 returns 1\n2. **Recursive case:** n * factorial(n-1)\n\n**Example:** factorial(5)\n- 5 * factorial(4)\n- 5 * 4 * factorial(3)\n- 5 * 4 * 3 * factorial(2)\n- 5 * 4 * 3 * 2 * factorial(1)\n- 5 * 4 * 3 * 2 * 1 = 120\n\n**Time Complexity:** O(n)\n**Space Complexity:** O(n) due to call stack",
+                        "explanation": "Use two pointers, one at start and one at end. Swap values and move pointers until they meet.",
                         "media_link": None
                     }
                 ]
@@ -119,12 +115,12 @@ def seed_contests():
             }
         ]
         
-        # Insert Python contests
-        for contest_data in python_contests:
+        # Insert C contests
+        for contest_data in c_contests:
             try:
                 existing = db.query(DailyContest).filter(
                     DailyContest.date == contest_data["date"],
-                    DailyContest.course_id == created_courses["CODING_PYTHON"]
+                    DailyContest.course_id == created_courses["CODING_C"]
                 ).first()
                 
                 if existing:
@@ -132,7 +128,7 @@ def seed_contests():
                     continue
                 
                 contest = DailyContest(
-                    course_id=created_courses["CODING_PYTHON"],
+                    course_id=created_courses["CODING_C"],
                     date=contest_data["date"],
                     title=contest_data["title"],
                     description=contest_data["description"]
@@ -153,14 +149,14 @@ def seed_contests():
                     db.add(question)
                 
                 db.commit()  # Commit each contest separately
-                print(f"✅ Created Python contest: {contest_data['date']} with {len(contest_data['questions'])} questions")
+                print(f"✅ Created C contest: {contest_data['date']} with {len(contest_data['questions'])} questions")
             except IntegrityError as e:
                 db.rollback()
-                print(f"⏭️  Skipping Python contest {contest_data['date']}: already exists or conflict")
+                print(f"⏭️  Skipping C contest {contest_data['date']}: already exists or conflict")
                 continue
             except Exception as e:
                 db.rollback()
-                print(f"❌ Error creating Python contest {contest_data['date']}: {e}")
+                print(f"❌ Error creating C contest {contest_data['date']}: {e}")
                 continue
         
         # Insert DAA contests

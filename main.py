@@ -362,6 +362,17 @@ class ContestQuestion(Base):
     
     contest = relationship("DailyContest", back_populates="questions")
 
+class CodingAnnouncement(Base):
+    __tablename__ = "coding_announcements"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    course_id = Column(Integer, ForeignKey("courses.id", ondelete="SET NULL"), nullable=True, index=True)
+    title = Column(String(255), nullable=False)
+    content = Column(Text, nullable=False)
+    attachment_url = Column(String(500), nullable=True)  # URL/Path to file
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
 # Legacy model - kept for backward compatibility during migration
 class DailyChallenge(Base):
     __tablename__ = "daily_challenges"
@@ -598,6 +609,23 @@ class DailyChallengeUpdate(BaseModel):
     question: Optional[str] = None
     code_snippet: Optional[str] = None
     explanation: Optional[str] = None
+
+class CodingAnnouncementCreate(BaseModel):
+    title: str
+    content: str
+    course_id: Optional[int] = None
+    # Attachment is handled via UploadFile in the endpoint
+
+class CodingAnnouncementResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    
+    id: int
+    course_id: Optional[int]
+    title: str
+    content: str
+    attachment_url: Optional[str]
+    created_at: datetime
+
     media_link: Optional[str] = None
 
 class DailyChallengeResponse(BaseModel):
@@ -2709,6 +2737,90 @@ def favicon():
     from fastapi import Response
 
     return Response(status_code=204)
+
+# ========== Coding Announcements Endpoints ==========
+
+@app.get("/coding-announcements", response_model=List[CodingAnnouncementResponse])
+def get_coding_announcements(
+    course_id: Optional[int] = None,
+    db: Session = Depends(get_db)
+):
+    query = db.query(CodingAnnouncement)
+    if course_id:
+        query = query.filter(or_(CodingAnnouncement.course_id == course_id, CodingAnnouncement.course_id == None))
+    return query.order_by(CodingAnnouncement.created_at.desc()).all()
+
+@app.post("/admin/coding-announcements", response_model=CodingAnnouncementResponse)
+async def create_coding_announcement(
+    title: str = Form(...),
+    content: str = Form(...),
+    course_id: Optional[int] = Form(None),
+    file: Optional[UploadFile] = File(None),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    # Check authorization (Coding TA or Admin)
+    # Note: user.is_sub_admin is basically user.admin_role == 'coding_ta'
+    if not (current_user.is_admin or current_user.admin_role == 'coding_ta'):
+        raise HTTPException(status_code=403, detail="Not authorized to post coding announcements")
+    
+    attachment_url = None
+    if file:
+        # Validate file size (2MB limit)
+        content_bytes = await file.read()
+        if len(content_bytes) > 2 * 1024 * 1024:
+             raise HTTPException(status_code=400, detail="File too large. Max size is 2MB.")
+        
+        # Reset cursor
+        await file.seek(0)
+        
+        # Save file
+        file_ext = Path(file.filename).suffix
+        safe_filename = f"{uuid.uuid4()}{file_ext}"
+        file_path = UPLOAD_DIR / safe_filename
+        
+        with open(file_path, "wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
+            
+        attachment_url = str(safe_filename)
+
+    announcement = CodingAnnouncement(
+        title=title,
+        content=content,
+        course_id=course_id,
+        attachment_url=attachment_url
+    )
+    db.add(announcement)
+    db.commit()
+    db.refresh(announcement)
+    return announcement
+
+@app.delete("/admin/coding-announcements/{announcement_id}")
+def delete_coding_announcement(
+    announcement_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    if not (current_user.is_admin or current_user.admin_role == 'coding_ta'):
+        raise HTTPException(status_code=403, detail="Not authorized")
+    
+    announcement = db.query(CodingAnnouncement).filter(CodingAnnouncement.id == announcement_id).first()
+    if not announcement:
+        raise HTTPException(status_code=404, detail="Announcement not found")
+    
+    # Delete file if exists
+    if announcement.attachment_url:
+        file_path = find_file_in_uploads(announcement.attachment_url)
+        if file_path and file_path.exists():
+            try:
+                os.remove(file_path)
+            except Exception as e:
+                print(f"Error deleting file: {e}")
+    
+    db.delete(announcement)
+    db.commit()
+    return {"message": "Announcement deleted successfully"}
+
 
 if __name__ == "__main__":
     import uvicorn
